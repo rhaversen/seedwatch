@@ -32,6 +32,8 @@ interface TurnStat {
 	systemChars: number
 	totalChars: number
 	charDelta: number
+	userMsgs: number[]
+	assistantMsgs: number[]
 }
 
 function charLen(msg: Msg): number {
@@ -73,10 +75,12 @@ function computeStats(turns: Turn[]): TurnStat[] {
 	return turns.map((t, i) => {
 		const msgs = t.messages as Msg[]
 		let userChars = 0, assistantChars = 0
+		const userMsgs: number[] = []
+		const assistantMsgs: number[] = []
 		for (const m of msgs) {
 			const len = charLen(m)
-			if (m.role === 'user') userChars += len
-			else if (m.role === 'assistant') assistantChars += len
+			if (m.role === 'user') { userChars += len; userMsgs.push(len) }
+			else if (m.role === 'assistant') { assistantChars += len; assistantMsgs.push(len) }
 		}
 		const systemChars = systemLen(t.system)
 		const totalChars = userChars + assistantChars + systemChars
@@ -103,6 +107,8 @@ function computeStats(turns: Turn[]): TurnStat[] {
 			systemChars,
 			totalChars,
 			charDelta: samePhaseAsPrev ? totalChars - prevTotal : 0,
+			userMsgs,
+			assistantMsgs,
 		}
 	})
 }
@@ -175,13 +181,50 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 		for (let i = n - 1; i >= 0; i--) pts.push(`${x(i).toFixed(1)},${yRole(botVals[i]).toFixed(1)}`)
 		return `M${pts.join('L')}Z`
 	}
+
+	const maxUserMsgs = Math.max(...stats.map(s => s.userMsgs.length), 1)
+	const maxAsstMsgs = Math.max(...stats.map(s => s.assistantMsgs.length), 1)
+
+	const logLum = (m: number, max: number, lo: number, hi: number) => {
+		if (max <= 1) return lo
+		const t = Math.log(1 + m) / Math.log(1 + max - 1)
+		return lo + t * (hi - lo)
+	}
+
+	type SubArea = { path: string; color: string; opacity: number }
+	const subAreas: SubArea[] = []
+
+	// System: single area at the bottom
 	const sysTop = stats.map(s => s.systemChars)
-	const usrTop = stats.map(s => s.systemChars + s.userChars)
-	const allTop = stats.map(s => s.systemChars + s.userChars + s.assistantChars)
 	const zero = stats.map(() => 0)
-	const systemArea = roleAreaPath(sysTop, zero)
-	const userArea = roleAreaPath(usrTop, sysTop)
-	const assistantArea = roleAreaPath(allTop, usrTop)
+	subAreas.push({ path: roleAreaPath(sysTop, zero), color: '#c084fc', opacity: 0.25 })
+
+	// User messages: stacked sub-areas within the user zone
+	for (let m = 0; m < maxUserMsgs; m++) {
+		const bot = stats.map((s, i) => {
+			const base = sysTop[i]
+			let acc = 0
+			for (let j = 0; j < m && j < s.userMsgs.length; j++) acc += s.userMsgs[j]
+			return base + acc
+		})
+		const top = stats.map((s, i) => bot[i] + (m < s.userMsgs.length ? s.userMsgs[m] : 0))
+		const lum = logLum(m, maxUserMsgs, 30, 65)
+		subAreas.push({ path: roleAreaPath(top, bot), color: `hsl(217, 91%, ${lum.toFixed(1)}%)`, opacity: 0.35 })
+	}
+
+	// Assistant messages: stacked sub-areas within the assistant zone
+	const usrTop = stats.map(s => s.systemChars + s.userChars)
+	for (let m = 0; m < maxAsstMsgs; m++) {
+		const bot = stats.map((s, i) => {
+			const base = usrTop[i]
+			let acc = 0
+			for (let j = 0; j < m && j < s.assistantMsgs.length; j++) acc += s.assistantMsgs[j]
+			return base + acc
+		})
+		const top = stats.map((s, i) => bot[i] + (m < s.assistantMsgs.length ? s.assistantMsgs[m] : 0))
+		const lum = logLum(m, maxAsstMsgs, 30, 60)
+		subAreas.push({ path: roleAreaPath(top, bot), color: `hsl(43, 96%, ${lum.toFixed(1)}%)`, opacity: 0.35 })
+	}
 
 	const barW = Math.max(4, Math.min(24, plotW / n * 0.6))
 
@@ -243,10 +286,10 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 				<line x1={PAD_L} x2={PAD_L} y1={PAD_T} y2={PAD_T + LINE_H} stroke="#404040" strokeWidth={1} />
 				<line x1={PAD_L} x2={chartW - PAD_R} y1={PAD_T + LINE_H} y2={PAD_T + LINE_H} stroke="#404040" strokeWidth={1} />
 
-				{/* Stacked area: role char breakdown */}
-				<path d={systemArea} fill="#c084fc" opacity={0.25} />
-				<path d={userArea} fill="#60a5fa" opacity={0.25} />
-				<path d={assistantArea} fill="#fbbf24" opacity={0.25} />
+				{/* Stacked area: per-message role char breakdown */}
+				{subAreas.map((a, i) => (
+					<path key={`area-${i}`} d={a.path} fill={a.color} opacity={a.opacity} />
+				))}
 
 				{/* Lines */}
 				<polyline points={outputLine} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinejoin="round" />
