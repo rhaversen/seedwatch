@@ -22,6 +22,8 @@ type Msg = Record<string, any>
 interface TurnStat {
 	index: number
 	phase: string
+	phaseTurn: number
+	phaseTotal: number
 	inputTokens: number
 	outputTokens: number
 	cost: number
@@ -56,6 +58,18 @@ function systemLen(blocks: unknown[]): number {
 }
 
 function computeStats(turns: Turn[]): TurnStat[] {
+	const phaseInfo = turns.map(() => ({ phaseTurn: 0, phaseTotal: 0 }))
+	let runStart = 0
+	for (let i = 0; i <= turns.length; i++) {
+		if (i === turns.length || (i > 0 && turns[i].phase !== turns[i - 1].phase)) {
+			const len = i - runStart
+			for (let j = runStart; j < i; j++) {
+				phaseInfo[j] = { phaseTurn: j - runStart + 1, phaseTotal: len }
+			}
+			runStart = i
+		}
+	}
+
 	return turns.map((t, i) => {
 		const msgs = t.messages as Msg[]
 		let userChars = 0, assistantChars = 0
@@ -79,6 +93,8 @@ function computeStats(turns: Turn[]): TurnStat[] {
 		return {
 			index: i,
 			phase: t.phase,
+			phaseTurn: phaseInfo[i].phaseTurn,
+			phaseTotal: phaseInfo[i].phaseTotal,
 			inputTokens: t.inputTokens,
 			outputTokens: t.outputTokens,
 			cost: t.cost,
@@ -117,7 +133,7 @@ function fmtCost(n: number): string {
 	return `$${n.toFixed(4)}`
 }
 
-export function CycleStats({ turns }: { turns: Turn[] }) {
+export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?: (overallIndex: number) => void }) {
 	const stats = useMemo(() => computeStats(turns), [turns])
 	const [hover, setHover] = useState<number | null>(null)
 	const svgRef = useRef<SVGSVGElement>(null)
@@ -199,9 +215,10 @@ export function CycleStats({ turns }: { turns: Turn[] }) {
 			<svg
 				ref={svgRef}
 				viewBox={`0 0 ${chartW} ${TOTAL_H}`}
-				className="w-full"
+				className="w-full cursor-pointer"
 				onMouseMove={onMouseMove}
 				onMouseLeave={() => setHover(null)}
+				onClick={() => { if (hover !== null && onTurnClick) onTurnClick(hover) }}
 			>
 				{/* Y-axis gridlines + labels (tokens left, cost right) */}
 				{tokenTicks.map((v, i) => {
@@ -297,7 +314,7 @@ export function CycleStats({ turns }: { turns: Turn[] }) {
 							strokeWidth={0.5}
 						/>
 						<text x={Math.min(x(hover) + 14, chartW - 179)} y={PAD_T + 14} fill="#e5e5e5" fontSize={10} fontWeight="600">
-							Turn {hover + 1} — {stats[hover].phase}
+							Turn {hover + 1} · {stats[hover].phase} {stats[hover].phaseTurn}/{stats[hover].phaseTotal}
 						</text>
 						<text x={Math.min(x(hover) + 14, chartW - 179)} y={PAD_T + 28} fill="#f59e0b" fontSize={9} fontFamily="monospace">
 							Out: {fmt(stats[hover].outputTokens)}

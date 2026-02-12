@@ -1,8 +1,7 @@
 import Link from 'next/link'
 import { getCycleDetail } from '@/lib/data'
 import { notFound } from 'next/navigation'
-import { TurnViewer } from './TurnViewer'
-import { CycleStats } from './CycleStats'
+import { CycleContent } from './CycleContent'
 
 export const dynamic = 'force-dynamic'
 
@@ -22,8 +21,6 @@ export default async function CyclePage({ params }: Props) {
 
 	const { usage, turns, log } = data
 
-	const phaseGroups = groupByPhase(turns)
-
 	return (
 		<div>
 			<div className="mb-6">
@@ -42,20 +39,7 @@ export default async function CyclePage({ params }: Props) {
 				</div>
 			</div>
 
-			<CycleStats turns={turns} />
-
-			{phaseGroups.map(group => (
-				<section key={group.phase} className="mb-8">
-					<h2 className="text-lg font-semibold mb-3 capitalize flex items-center gap-2">
-						<PhaseIcon phase={group.phase} />
-						{group.phase}
-						<span className="text-sm font-normal text-(--text-dim)">
-							({group.turns.length} turn{group.turns.length !== 1 ? 's' : ''})
-						</span>
-					</h2>
-					<TurnViewer turns={group.turns} />
-				</section>
-			))}
+			<CycleContent turns={turns} />
 
 			{log && log.entries.length > 0 && (
 				<section className="mb-8">
@@ -84,41 +68,4 @@ export default async function CyclePage({ params }: Props) {
 			)}
 		</div>
 	)
-}
-
-function PhaseIcon({ phase }: { phase: string }) {
-	const icons: Record<string, string> = {
-		planner: '🧭',
-		builder: '🔧',
-		reflect: '🪞',
-		memory: '🧠',
-	}
-	return <span className="text-(--text-dim)">{icons[phase] ?? '⚙️'}</span>
-}
-
-interface Turn {
-	id: string
-	phase: string
-	modelId: string
-	system: unknown[]
-	messages: unknown[]
-	response: unknown[]
-	inputTokens: number
-	outputTokens: number
-	cost: number
-	stopReason: string
-	createdAt: string
-}
-
-function groupByPhase(turns: Turn[]) {
-	const groups: { phase: string; turns: Turn[] }[] = []
-	for (const turn of turns) {
-		const last = groups[groups.length - 1]
-		if (last && last.phase === turn.phase) {
-			last.turns.push(turn)
-		} else {
-			groups.push({ phase: turn.phase, turns: [turn] })
-		}
-	}
-	return groups
 }

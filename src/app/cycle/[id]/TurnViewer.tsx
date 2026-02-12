@@ -27,7 +27,7 @@ interface ClassifiedMsg {
 	status: MessageStatus
 }
 
-export function TurnViewer({ turns }: { turns: Turn[] }) {
+export function TurnViewer({ turns, overallStartIndex = 0, selectedTurn, selectionKey = 0 }: { turns: Turn[]; overallStartIndex?: number; selectedTurn?: number; selectionKey?: number }) {
 	const [currentTurn, setCurrentTurn] = useState(0)
 	const [anim, setAnim] = useState<'forward' | 'backward' | null>(null)
 	const containerRef = useRef<HTMLDivElement>(null)
@@ -97,6 +97,14 @@ export function TurnViewer({ turns }: { turns: Turn[] }) {
 		return () => window.removeEventListener('keydown', onKey)
 	}, [navigate])
 
+	useEffect(() => {
+		if (selectedTurn === undefined) return
+		const localIndex = selectedTurn - overallStartIndex
+		if (localIndex < 0 || localIndex >= turns.length) return
+		setCurrentTurn(localIndex)
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [selectedTurn, selectionKey])
+
 	const turn = turns[currentTurn]
 	const prevTurn = currentTurn > 0 ? turns[currentTurn - 1] : null
 
@@ -121,8 +129,8 @@ export function TurnViewer({ turns }: { turns: Turn[] }) {
 				<div className="flex items-center justify-between text-sm">
 					<div className="flex items-center gap-3">
 						<span className="font-mono font-semibold">
-							Turn {currentTurn + 1}
-							<span className="text-(--text-dim) font-normal"> / {turns.length}</span>
+							Turn {overallStartIndex + currentTurn + 1}
+							<span className="text-(--text-dim) font-normal"> · {turn.phase} {currentTurn + 1}/{turns.length}</span>
 						</span>
 						<span className="text-xs text-(--text-dim)">{turn.modelId}</span>
 						{changedCount > 0 && (
@@ -318,11 +326,17 @@ function MessageBubble({ message, muted, variant }: {
 						<span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e3a5f] text-(--blue)">new</span>
 					)}
 				</div>
-				{isLong && (
-					<button onClick={() => setExpanded(!expanded)} className="text-xs text-(--text-dim) hover:text-(--text)">
-						{expanded ? 'collapse' : `${content.length.toLocaleString()} chars`}
-					</button>
-				)}
+				<div className="flex items-center gap-1.5 text-xs text-(--text-dim)">
+					{isLong && (
+						<>
+							<button onClick={() => setExpanded(!expanded)} className="hover:text-(--text)">
+								{expanded ? 'collapse' : 'expand'}
+							</button>
+							<span>·</span>
+						</>
+					)}
+					<span>{content.length.toLocaleString()} chars</span>
+				</div>
 			</div>
 			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
 				{expanded ? content : preview}{!expanded && isLong ? '…' : ''}
