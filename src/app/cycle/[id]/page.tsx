@@ -7,10 +7,12 @@ export const dynamic = 'force-dynamic'
 
 interface Props {
 	params: Promise<{ id: string }>
+	searchParams: Promise<{ turn?: string }>
 }
 
-export default async function CyclePage({ params }: Props) {
+export default async function CyclePage({ params, searchParams }: Props) {
 	const { id } = await params
+	const { turn } = await searchParams
 	let data
 	try {
 		data = await getCycleDetail(id)
@@ -39,7 +41,7 @@ export default async function CyclePage({ params }: Props) {
 				</div>
 			</div>
 
-			<CycleContent turns={turns} />
+			<CycleContent turns={turns} initialTurn={turn ? Number(turn) : undefined} />
 
 			{log && log.entries.length > 0 && (
 				<section className="mb-8">

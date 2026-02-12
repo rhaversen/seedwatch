@@ -151,3 +151,43 @@ export async function getMemories(): Promise<(IMemory & { _id: string })[]> {
 	const memories = await MemoryModel.find().sort({ pinned: -1, createdAt: -1 }).lean<IMemory[]>()
 	return serialize(memories) as (IMemory & { _id: string })[]
 }
+
+export interface TurnStatRow {
+	phase: string
+	inputTokens: number
+	outputTokens: number
+	cost: number
+	createdAt: string
+	cycleId: string
+	turnInCycle: number
+}
+
+export async function getAllTurnStats(): Promise<TurnStatRow[]> {
+	await connectDB()
+	const all = await GeneratedModel
+		.find()
+		.select('phase inputTokens outputTokens cost createdAt')
+		.sort({ createdAt: 1 })
+		.lean<Pick<IGenerated, '_id' | 'phase' | 'inputTokens' | 'outputTokens' | 'cost' | 'createdAt'>[]>()
+
+	let cycleId = ''
+	let turnInCycle = 0
+	let prevPhase = ''
+
+	return all.map(g => {
+		if (g.phase === 'planner' && prevPhase !== 'planner') {
+			cycleId = String(g._id)
+			turnInCycle = 0
+		}
+		prevPhase = g.phase
+		return {
+			phase: g.phase,
+			inputTokens: g.inputTokens,
+			outputTokens: g.outputTokens,
+			cost: g.cost,
+			createdAt: g.createdAt.toISOString(),
+			cycleId: cycleId || String(g._id),
+			turnInCycle: turnInCycle++,
+		}
+	})
+}

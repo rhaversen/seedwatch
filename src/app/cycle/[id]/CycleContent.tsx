@@ -38,9 +38,9 @@ const phaseIcons: Record<string, string> = {
 	memory: '🧠',
 }
 
-export function CycleContent({ turns }: { turns: Turn[] }) {
-	const [selectedTurn, setSelectedTurn] = useState<number | undefined>(undefined)
-	const [selectionKey, setSelectionKey] = useState(0)
+export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTurn?: number }) {
+	const [selectedTurn, setSelectedTurn] = useState<number | undefined>(initialTurn)
+	const [selectionKey, setSelectionKey] = useState(initialTurn !== undefined ? 1 : 0)
 	const sectionRefs = useRef<Map<number, HTMLElement>>(new Map())
 
 	const phaseGroups = useMemo(() => {
@@ -57,6 +57,20 @@ export function CycleContent({ turns }: { turns: Turn[] }) {
 		}
 		return groups
 	}, [turns])
+
+	useEffect(() => {
+		if (initialTurn === undefined) return
+		const group = phaseGroups.find(g =>
+			initialTurn >= g.overallStartIndex &&
+			initialTurn < g.overallStartIndex + g.turns.length,
+		)
+		if (group) {
+			requestAnimationFrame(() => {
+				const el = sectionRefs.current.get(group.overallStartIndex)
+				el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+			})
+		}
+	}, []) // eslint-disable-line react-hooks/exhaustive-deps
 
 	const handleTurnClick = useCallback((overallIndex: number) => {
 		setSelectedTurn(overallIndex)

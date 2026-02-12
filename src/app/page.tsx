@@ -1,12 +1,14 @@
 import Link from 'next/link'
-import { getCycles } from '@/lib/data'
+import { getCycles, getAllTurnStats } from '@/lib/data'
+import { OverallStats } from './OverallStats'
 
 export const dynamic = 'force-dynamic'
 
 export default async function CyclesPage() {
   let cycles
+  let turnStats
   try {
-    cycles = await getCycles()
+    ;[cycles, turnStats] = await Promise.all([getCycles(), getAllTurnStats()])
   } catch {
     return (
       <div className="text-center py-20 text-(--text-dim)">
@@ -36,6 +38,8 @@ export default async function CyclesPage() {
           {cycles.length} cycles &middot; ${totalCost.toFixed(4)} total
         </span>
       </div>
+
+      <OverallStats turns={turnStats} />
 
       <div className="space-y-2">
         {cycles.map((cycle, i) => (

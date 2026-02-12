@@ -124,7 +124,7 @@ const LINE_H = 180
 const BAR_H = 100
 const GAP = 24
 const PAD_L = 56
-const PAD_R = 16
+const PAD_R = 52
 const PAD_T = 12
 const PAD_B = 22
 const TOTAL_H = LINE_H + GAP + BAR_H + PAD_T + PAD_B
@@ -136,6 +136,8 @@ function fmt(n: number): string {
 }
 
 function fmtCost(n: number): string {
+	if (n >= 0.01) return `$${n.toFixed(2)}`
+	if (n >= 0.001) return `$${n.toFixed(3)}`
 	return `$${n.toFixed(4)}`
 }
 
