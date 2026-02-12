@@ -1,5 +1,6 @@
 import { getStatistics } from '@/lib/data'
 import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand } from '@/lib/data'
+import DownloadButton from './DownloadButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,7 +50,10 @@ export default async function StatisticsPage() {
 
 	return (
 		<div className="space-y-8">
-			<h1 className="text-2xl font-semibold">Token Usage Statistics</h1>
+			<div className="flex items-center justify-between">
+				<h1 className="text-2xl font-semibold">Token Usage Statistics</h1>
+				<DownloadButton />
+			</div>
 
 			<ExecutiveSummary stats={stats} />
 			<ToplineStats stats={stats} />
