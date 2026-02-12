@@ -166,9 +166,6 @@ export function TurnViewer({ turns, overallStartIndex = 0, selectedTurn, selecti
 				previous={prevSystem}
 				changed={systemChanged}
 				isFirst={currentTurn === 0}
-				enterAnim={enterAnim}
-				exitAnim={exitAnim}
-				isAnimating={anim !== null}
 			/>
 
 			{/* Messages */}
@@ -205,15 +202,12 @@ export function TurnViewer({ turns, overallStartIndex = 0, selectedTurn, selecti
 /* ── System prompt section ──────────────────────────────────────── */
 
 function SystemSection({
-	current, previous, changed, isFirst, enterAnim, exitAnim, isAnimating,
+	current, previous, changed, isFirst,
 }: {
 	current: MessageBlock[]
 	previous: MessageBlock[]
 	changed: boolean
 	isFirst: boolean
-	enterAnim: string
-	exitAnim: string
-	isAnimating: boolean
 }) {
 	const [expanded, setExpanded] = useState(false)
 
@@ -226,6 +220,19 @@ function SystemSection({
 	const diff = prevLen - currLen
 	const pct = prevLen > 0 ? Math.round(Math.abs(diff) / prevLen * 100) : 0
 
+	const changedLineCount = changed
+		? currStr.split('\n').filter((l, i, a) => {
+			const prev = prevStr.split('\n')
+			return i >= prev.length || l !== prev[i]
+		}).length + Math.max(0, prevStr.split('\n').length - currStr.split('\n').length)
+		: 0
+
+	const changeSummary = diff > 0
+		? `−${diff} chars (${pct}%)`
+		: diff < 0
+			? `+${Math.abs(diff)} chars`
+			: `${changedLineCount} line${changedLineCount !== 1 ? 's' : ''} modified`
+
 	return (
 		<div className={`border rounded-lg overflow-hidden mb-3 ${changed ? 'border-purple-800 bg-[#1a1520]' : 'border-(--border)'}`}>
 			<button
@@ -236,48 +243,24 @@ function SystemSection({
 					<span className="text-purple-400 font-semibold">System Prompt</span>
 					{changed && (
 						<span className="px-2 py-0.5 rounded-full bg-purple-900/50 text-purple-300">
-							changed {diff > 0 ? `−${diff} chars (${pct}%)` : diff < 0 ? `+${Math.abs(diff)} chars` : 'modified'}
+							changed · {changeSummary}
 						</span>
-					)}
-					{!changed && isFirst && (
-						<span className="text-(--text-dim)">({currLen.toLocaleString()} chars)</span>
 					)}
 					{!changed && !isFirst && (
 						<span className="text-(--text-dim)">unchanged</span>
 					)}
 				</div>
-				<span className="text-xs">{expanded ? '▾' : '▸'}</span>
+				<span className="flex items-center gap-1.5 text-xs text-(--text-dim)">
+					<span>{currLen.toLocaleString()} chars</span>
+					<span>·</span>
+					<span>{expanded ? '▾' : '▸'}</span>
+				</span>
 			</button>
 
 			{expanded && (
 				<div className="border-t border-(--border) p-3">
 					{changed && previous.length > 0 ? (
-						<div className="relative overflow-hidden">
-							{isAnimating && (
-								<div className={`absolute inset-x-0 top-0 z-0 ${exitAnim} pointer-events-none`}>
-									<div className="text-xs font-semibold text-(--error) mb-1">Previous</div>
-									<pre className="text-xs text-(--text-dim) whitespace-pre-wrap wrap-break-word font-mono max-h-64 overflow-y-auto">
-										{prevStr.slice(0, 4000)}{prevStr.length > 4000 ? '\n…(truncated)' : ''}
-									</pre>
-								</div>
-							)}
-							<div className={isAnimating ? `relative z-10 ${enterAnim}` : ''}>
-								<div className="grid grid-cols-2 gap-3">
-									<div>
-										<div className="text-xs font-semibold text-(--error) mb-1">Before ({prevLen.toLocaleString()})</div>
-										<pre className="text-xs text-(--text-dim) whitespace-pre-wrap wrap-break-word font-mono max-h-64 overflow-y-auto">
-											{prevStr.slice(0, 4000)}{prevStr.length > 4000 ? '\n…(truncated)' : ''}
-										</pre>
-									</div>
-									<div>
-										<div className="text-xs font-semibold text-(--accent) mb-1">After ({currLen.toLocaleString()})</div>
-										<pre className="text-xs text-(--text-dim) whitespace-pre-wrap wrap-break-word font-mono max-h-64 overflow-y-auto">
-											{currStr.slice(0, 4000)}{currStr.length > 4000 ? '\n…(truncated)' : ''}
-										</pre>
-									</div>
-								</div>
-							</div>
-						</div>
+						<DiffView prev={prevStr} curr={currStr} />
 					) : (
 						<pre className="text-xs text-(--text-dim) whitespace-pre-wrap wrap-break-word font-mono max-h-80 overflow-y-auto">
 							{currStr.slice(0, 6000)}{currStr.length > 6000 ? '\n…(truncated)' : ''}
@@ -285,6 +268,95 @@ function SystemSection({
 					)}
 				</div>
 			)}
+		</div>
+	)
+}
+
+function DiffView({ prev, curr }: { prev: string; curr: string }) {
+	const prevLines = prev.split('\n')
+	const currLines = curr.split('\n')
+
+	const diffLines: { type: 'same' | 'add' | 'remove'; text: string }[] = []
+	let pi = 0, ci = 0
+
+	while (pi < prevLines.length || ci < currLines.length) {
+		if (pi < prevLines.length && ci < currLines.length && prevLines[pi] === currLines[ci]) {
+			diffLines.push({ type: 'same', text: currLines[ci] })
+			pi++; ci++
+		} else {
+			const lookAhead = 3
+			let found = false
+			for (let d = 1; d <= lookAhead && !found; d++) {
+				if (ci + d < currLines.length && pi < prevLines.length && prevLines[pi] === currLines[ci + d]) {
+					for (let k = 0; k < d; k++) diffLines.push({ type: 'add', text: currLines[ci + k] })
+					ci += d
+					found = true
+				}
+				if (pi + d < prevLines.length && ci < currLines.length && prevLines[pi + d] === currLines[ci]) {
+					for (let k = 0; k < d; k++) diffLines.push({ type: 'remove', text: prevLines[pi + k] })
+					pi += d
+					found = true
+				}
+			}
+			if (!found) {
+				if (pi < prevLines.length) { diffLines.push({ type: 'remove', text: prevLines[pi] }); pi++ }
+				if (ci < currLines.length) { diffLines.push({ type: 'add', text: currLines[ci] }); ci++ }
+			}
+		}
+		if (diffLines.length > 500) break
+	}
+
+	const collapsed: { type: 'same' | 'add' | 'remove' | 'collapse'; lines: string[]; count?: number }[] = []
+	let sameRun: string[] = []
+
+	const flushSame = () => {
+		if (sameRun.length === 0) return
+		if (sameRun.length <= 4) {
+			for (const l of sameRun) collapsed.push({ type: 'same', lines: [l] })
+		} else {
+			collapsed.push({ type: 'same', lines: [sameRun[0], sameRun[1]] })
+			collapsed.push({ type: 'collapse', lines: [], count: sameRun.length - 4 })
+			collapsed.push({ type: 'same', lines: [sameRun[sameRun.length - 2], sameRun[sameRun.length - 1]] })
+		}
+		sameRun = []
+	}
+
+	for (const d of diffLines) {
+		if (d.type === 'same') {
+			sameRun.push(d.text)
+		} else {
+			flushSame()
+			collapsed.push({ type: d.type, lines: [d.text] })
+		}
+	}
+	flushSame()
+
+	return (
+		<div className="text-xs font-mono max-h-80 overflow-y-auto space-y-0">
+			{collapsed.map((chunk, i) => {
+				if (chunk.type === 'collapse') {
+					return (
+						<div key={i} className="text-(--text-dim) py-0.5 px-2 text-center text-[10px]">
+							⋯ {chunk.count} unchanged lines ⋯
+						</div>
+					)
+				}
+				return chunk.lines.map((line, j) => (
+					<div
+						key={`${i}-${j}`}
+						className={`px-2 py-px whitespace-pre-wrap wrap-break-word ${
+							chunk.type === 'add' ? 'bg-green-900/30 text-green-300' :
+							chunk.type === 'remove' ? 'bg-red-900/30 text-red-400 line-through' :
+							'text-(--text-dim)'
+						}`}
+					>
+						<span className="inline-block w-4 shrink-0 text-(--text-dim)">
+							{chunk.type === 'add' ? '+' : chunk.type === 'remove' ? '−' : ' '}
+						</span>
+						{line || ' '}
+					</div>
+				))
+			})}
 		</div>
 	)
 }
@@ -338,7 +410,7 @@ function MessageBubble({ message, muted, variant }: {
 					<span>{content.length.toLocaleString()} chars</span>
 				</div>
 			</div>
-			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
+			<pre className={`text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) ${expanded ? 'max-h-80 overflow-y-auto' : ''}`}>
 				{expanded ? content : preview}{!expanded && isLong ? '…' : ''}
 			</pre>
 		</div>
@@ -351,7 +423,7 @@ function ResponseBlock({ block }: { block: MessageBlock }) {
 	if (block.type === 'text') {
 		return (
 			<div className="border border-(--border) rounded-lg p-3 mb-1">
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono">{block.text}</pre>
+				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono max-h-80 overflow-y-auto">{block.text}</pre>
 			</div>
 		)
 	}
@@ -359,7 +431,7 @@ function ResponseBlock({ block }: { block: MessageBlock }) {
 		return (
 			<div className="border border-[#2d3a20] rounded-lg p-3 mb-1">
 				<div className="text-xs font-semibold text-(--accent) mb-1">🔧 {block.name}</div>
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
+				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-80 overflow-y-auto">
 					{JSON.stringify(block.input, null, 2)}
 				</pre>
 			</div>
@@ -367,7 +439,7 @@ function ResponseBlock({ block }: { block: MessageBlock }) {
 	}
 	return (
 		<div className="border border-(--border) rounded-lg p-3 mb-1">
-			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
+			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-80 overflow-y-auto">
 				{JSON.stringify(block, null, 2)}
 			</pre>
 		</div>
@@ -390,7 +462,7 @@ function extractContent(message: MessageBlock): string {
 				const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
 				return `[tool_result ${block.tool_use_id?.slice(-8) ?? ''}] ${text}`
 			}
-			if (block.type === 'tool_use') return `[tool_use: ${block.name}] ${JSON.stringify(block.input)}`
+			if (block.type === 'tool_use') return `[tool_use: ${block.name}]${block.input ? ' ' + JSON.stringify(block.input) : ''}`
 			return JSON.stringify(block)
 		}).join('\n')
 	}
