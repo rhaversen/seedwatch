@@ -53,6 +53,7 @@ function generateMarkdown(stats: Statistics): string {
 	generateBuildVsFixProductivity(stats, push, blank)
 	generateCostEfficiencyCurve(stats, push, blank)
 	generateMemoryOverhead(stats, push, blank)
+	generateSummarizerOverhead(stats, push, blank)
 	generateOptimizationOpportunities(stats, push, blank)
 
 	return lines.join('\n')
@@ -810,6 +811,46 @@ function generateMemoryOverhead(stats: Statistics, push: (...s: string[]) => voi
 		push(`> **${shortContent.length}** ${shortContent.length === 1 ? 'call' : 'calls'} had content under 200 chars — short enough to use as-is without LLM summarization. Cost of these unnecessary calls: ${fmtCost(shortContentCost)}`)
 		blank()
 	}
+}
+
+function generateSummarizerOverhead(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {
+	const details = stats.summarizerBatchDetails
+	if (details.length === 0) return
+
+	const totalEntries = details.reduce((s, d) => s + d.entriesInBatch, 0)
+	const totalCost = details.reduce((s, d) => s + d.totalCost, 0)
+	const totalInput = details.reduce((s, d) => s + d.totalInputTokens, 0)
+	const avgEntries = Math.round(totalEntries / details.length)
+
+	push(`## Summarizer Batch Overhead`)
+	blank()
+	push(`Each summarizer batch sends N candidate tool results through the Batch API (50% cost discount) to compress conversation context.`)
+	blank()
+
+	push(mdTable(
+		['Metric', 'Value'],
+		[
+			['Total Batches', String(details.length)],
+			['Total Entries', String(totalEntries)],
+			['Total Cost', `${fmtCost(totalCost)} (${pct(totalCost, stats.totalCost)} of total)`],
+			['Avg Entries/Batch', String(avgEntries)],
+			['Total Input', `${fmt(totalInput)} tok`],
+		],
+	))
+	blank()
+
+	const byCycle = Map.groupBy(details, d => d.cycleIndex)
+	push(mdTable(
+		['Cycle', 'Batches', 'Entries', 'Input Tok', 'Cost'],
+		[...byCycle.entries()].map(([, batches]) => [
+			batches[0].cycleTitle,
+			String(batches.length),
+			String(batches.reduce((s, b) => s + b.entriesInBatch, 0)),
+			fmt(batches.reduce((s, b) => s + b.totalInputTokens, 0)),
+			fmtCost(batches.reduce((s, b) => s + b.totalCost, 0)),
+		]),
+	))
+	blank()
 }
 
 function generateOptimizationOpportunities(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {

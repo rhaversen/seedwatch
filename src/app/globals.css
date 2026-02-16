@@ -43,3 +43,22 @@ a { color: inherit; text-decoration: none; }
 .anim-enter-left  { animation: slide-in-left  320ms ease-out both; }
 .anim-exit-left   { animation: slide-out-left  280ms ease-in both; }
 .anim-exit-right  { animation: slide-out-right 280ms ease-in both; }
+
+.seedwatch-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: #404040 transparent;
+}
+.seedwatch-scrollbar::-webkit-scrollbar {
+	height: 6px;
+}
+.seedwatch-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+	border-radius: 3px;
+}
+.seedwatch-scrollbar::-webkit-scrollbar-thumb {
+	background: #404040;
+	border-radius: 3px;
+}
+.seedwatch-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: #555;
+}

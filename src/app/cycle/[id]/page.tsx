@@ -33,11 +33,20 @@ export default async function CyclePage({ params, searchParams }: Props) {
 
 			<div className="border border-(--border) rounded-lg p-5 mb-6">
 				<h1 className="text-xl font-semibold mb-3">{usage.planTitle}</h1>
-				<div className="flex gap-6 text-sm text-(--text-dim)">
+				<div className="flex gap-6 text-sm text-(--text-dim) flex-wrap">
 					<span>${usage.totalCost.toFixed(4)}</span>
 					<span>{usage.totalCalls} API calls</span>
 					<span>{(usage.totalInputTokens / 1000).toFixed(1)}k in / {(usage.totalOutputTokens / 1000).toFixed(1)}k out</span>
-					<span>{new Date(usage.createdAt).toLocaleString()}</span>
+					{(usage.totalCacheReadTokens > 0 || usage.totalCacheWrite5mTokens > 0 || usage.totalCacheWrite1hTokens > 0) && (
+						<span className="text-[#c084fc]">
+							{usage.totalCacheReadTokens > 0 && `${(usage.totalCacheReadTokens / 1000).toFixed(1)}k cached`}
+							{usage.totalCacheReadTokens > 0 && (usage.totalCacheWrite5mTokens > 0 || usage.totalCacheWrite1hTokens > 0) && ' · '}
+							{usage.totalCacheWrite5mTokens > 0 && `${(usage.totalCacheWrite5mTokens / 1000).toFixed(1)}k write-5m`}
+							{usage.totalCacheWrite5mTokens > 0 && usage.totalCacheWrite1hTokens > 0 && ' · '}
+							{usage.totalCacheWrite1hTokens > 0 && `${(usage.totalCacheWrite1hTokens / 1000).toFixed(1)}k write-1h`}
+						</span>
+					)}
+					<span>{new Date(usage.createdAt).toLocaleString('en-US')}</span>
 				</div>
 			</div>
 

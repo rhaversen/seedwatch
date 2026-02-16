@@ -41,6 +41,9 @@ export default function RootLayout({
           <Link href="/statistics" className="text-sm text-(--text-dim) hover:text-(--text)">
             Statistics
           </Link>
+          <Link href="/search" className="text-sm text-(--text-dim) hover:text-(--text)">
+            Search
+          </Link>
         </nav>
         <main className="max-w-7xl mx-auto px-6 py-6">
           {children}
