@@ -1,5 +1,5 @@
 import { getStatistics } from '@/lib/data'
-import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, SummarizerBatchDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand } from '@/lib/data'
+import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, SummarizerBatchDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand, CostVelocity } from '@/lib/data'
 import DownloadButton from './DownloadButton'
 import { phaseColors } from '@/lib/phases'
 
@@ -51,7 +51,8 @@ export default async function StatisticsPage() {
 
 			<ExecutiveSummary stats={stats} />
 			<ToplineStats stats={stats} />
-			<PhaseBreakdown phaseStats={stats.phaseStats} totalCost={stats.totalCost} totalInput={stats.totalInputTokens} />
+			{stats.costVelocity && <CostVelocityPanel velocity={stats.costVelocity} cycleCount={stats.cycleCount} />}
+			<PhaseBreakdown phaseStats={stats.phaseStats} totalCost={stats.totalCost} totalInput={stats.totalInputTokens} totalOutput={stats.totalOutputTokens} />
 			<CycleComparison overviews={stats.cycleOverviews} />
 			<CycleScorecard stats={stats} />
 			<BuilderEscalation points={stats.builderTurnPoints} />
@@ -78,7 +79,7 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 	const fixCostPct = fixProd ? (fixProd.totalCost / stats.totalCost) * 100 : 0
 	const fixCostMultiplier = fixProd && buildProd && buildProd.costPerOutputToken > 0
 		? fixProd.costPerOutputToken / buildProd.costPerOutputToken : 0
-	const totalReReads = stats.repeatedFileReads.reduce((s, r) => s + r.readCount - 1, 0)
+	const totalReReads = stats.repeatedFileReads.length
 	const uncachedBuilder = stats.systemPromptBreakdowns.find(b => b.phase === 'builder')
 	const uncachedChars = uncachedBuilder?.blocks.filter(b => !b.cached).reduce((s, b) => s + b.chars, 0) ?? 0
 	const uncachedTokens = Math.round(uncachedChars / 4)
@@ -108,8 +109,8 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 	if (totalReReads > 0) {
 		findings.push({
 			icon: String(findings.length + 1),
-			label: 'Aggressive compression causes re-reads',
-			detail: `${totalReReads} redundant file reads across cycles because earlier results were fully redacted instead of summarized.`,
+			label: 'Compression causes re-reads',
+			detail: `${totalReReads} file re-reads caused by summarizer compressing earlier results of overlapping line ranges.`,
 			color: 'var(--warn)',
 		})
 	}
@@ -165,7 +166,96 @@ function ToplineStats({ stats }: { stats: Statistics }) {
 	)
 }
 
-function PhaseBreakdown({ phaseStats, totalCost, totalInput }: { phaseStats: PhaseStats[]; totalCost: number; totalInput: number }) {
+function fmtDuration(minutes: number): string {
+	if (minutes < 1) return `${Math.round(minutes * 60)}s`
+	if (minutes < 60) return `${minutes.toFixed(1)}m`
+	const h = Math.floor(minutes / 60)
+	const m = Math.round(minutes % 60)
+	return m > 0 ? `${h}h ${m}m` : `${h}h`
+}
+
+function CostVelocityPanel({ velocity, cycleCount }: { velocity: CostVelocity; cycleCount: number }) {
+	const elapsedLabel = velocity.totalElapsedHours < 24
+		? `${velocity.totalElapsedHours.toFixed(1)} hours`
+		: `${(velocity.totalElapsedHours / 24).toFixed(1)} days`
+
+	return (
+		<section className="border border-(--border) rounded-lg p-5">
+			<h2 className="text-lg font-semibold mb-4">Cost Velocity</h2>
+
+			<div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+				{[
+					{ label: 'Cost / Hour', value: fmtCost(velocity.costPerHour) },
+					{ label: 'Cost / Day', value: fmtCost(velocity.costPerDay) },
+					{ label: 'Projected / Month', value: fmtCost(velocity.projectedMonthlyCost) },
+					{ label: 'Cycles / Day', value: velocity.cyclesPerDay.toFixed(1) },
+					{ label: 'Avg Cycle Duration', value: fmtDuration(velocity.avgCycleDurationMinutes) },
+					{ label: 'Median Cycle Duration', value: fmtDuration(velocity.medianCycleDurationMinutes) },
+					{ label: 'Fastest Cycle', value: fmtDuration(velocity.minCycleDurationMinutes) },
+					{ label: 'Slowest Cycle', value: fmtDuration(velocity.maxCycleDurationMinutes) },
+					{ label: 'Avg Cost / Cycle', value: fmtCost(velocity.avgCycleCost) },
+					{ label: 'Median Cost / Cycle', value: fmtCost(velocity.medianCycleCost) },
+					{ label: 'Time Span', value: elapsedLabel },
+					{ label: 'Total Cycles', value: String(cycleCount) },
+				].map(s => (
+					<div key={s.label} className="border border-(--border) rounded-lg p-3">
+						<div className="text-xs text-(--text-dim)">{s.label}</div>
+						<div className="text-lg font-mono font-semibold mt-1">{s.value}</div>
+					</div>
+				))}
+			</div>
+
+			<div className="mt-4">
+				<div className="text-xs text-(--text-dim) mb-2">Cumulative Cost Over Cycles</div>
+				<div className="flex items-end gap-px h-32">
+					{velocity.costTrend.map((p, i) => {
+						const maxCost = velocity.costTrend[velocity.costTrend.length - 1].cumulativeCost
+						const h = maxCost > 0 ? (p.cumulativeCost / maxCost) * 100 : 0
+						return (
+							<div
+								key={i}
+								className="flex-1 bg-(--accent) rounded-t-sm hover:bg-(--accent)/80 transition-colors"
+								style={{ height: `${h}%`, minWidth: 2 }}
+								title={`Cycle ${p.cycleIndex + 1}: ${fmtCost(p.cost)} (${fmtDuration(p.durationMinutes)}) · Cumulative: ${fmtCost(p.cumulativeCost)}`}
+							/>
+						)
+					})}
+				</div>
+				<div className="flex justify-between text-[10px] text-(--text-dim) mt-1">
+					<span>Cycle 1</span>
+					<span>Cycle {velocity.costTrend.length}</span>
+				</div>
+			</div>
+
+			<div className="mt-4">
+				<div className="text-xs text-(--text-dim) mb-2">Cost Per Cycle</div>
+				<div className="flex items-end gap-px h-24">
+					{velocity.costTrend.map((p, i) => {
+						const maxSingle = Math.max(...velocity.costTrend.map(t => t.cost))
+						const h = maxSingle > 0 ? (p.cost / maxSingle) * 100 : 0
+						return (
+							<div
+								key={i}
+								className="flex-1 rounded-t-sm hover:opacity-80 transition-opacity"
+								style={{ height: `${Math.max(h, 2)}%`, minWidth: 2, backgroundColor: phaseColors.builder }}
+								title={`Cycle ${p.cycleIndex + 1}: ${fmtCost(p.cost)} · ${fmtDuration(p.durationMinutes)}`}
+							/>
+						)
+					})}
+				</div>
+				<div className="flex justify-between text-[10px] text-(--text-dim) mt-1">
+					<span>Cycle 1</span>
+					<span>Cycle {velocity.costTrend.length}</span>
+				</div>
+			</div>
+		</section>
+	)
+}
+
+function PhaseBreakdown({ phaseStats, totalCost, totalInput, totalOutput }: { phaseStats: PhaseStats[]; totalCost: number; totalInput: number; totalOutput: number }) {
+	const totalInputCost = phaseStats.reduce((s, p) => s + p.inputCost, 0)
+	const totalOutputCost = phaseStats.reduce((s, p) => s + p.outputCost, 0)
+
 	return (
 		<section className="border border-(--border) rounded-lg p-5">
 			<h2 className="text-lg font-semibold mb-4">Phase Breakdown</h2>
@@ -192,7 +282,7 @@ function PhaseBreakdown({ phaseStats, totalCost, totalInput }: { phaseStats: Pha
 			</div>
 
 			{/* Input token bar */}
-			<div className="mb-6">
+			<div className="mb-4">
 				<div className="text-xs text-(--text-dim) mb-1">Input Token Distribution</div>
 				<div className="flex rounded-full overflow-hidden h-6">
 					{phaseStats.map(p => {
@@ -212,6 +302,27 @@ function PhaseBreakdown({ phaseStats, totalCost, totalInput }: { phaseStats: Pha
 				</div>
 			</div>
 
+			{/* Output token bar */}
+			<div className="mb-6">
+				<div className="text-xs text-(--text-dim) mb-1">Output Token Distribution</div>
+				<div className="flex rounded-full overflow-hidden h-6">
+					{phaseStats.map(p => {
+						const w = (p.outputTokens / totalOutput) * 100
+						if (w < 0.5) return null
+						return (
+							<div
+								key={p.phase}
+								className="flex items-center justify-center text-[10px] font-mono text-white/90"
+								style={{ width: `${w}%`, backgroundColor: phaseColors[p.phase] ?? '#555' }}
+								title={`${p.phase}: ${fmt(p.outputTokens)} (${pct(p.outputTokens, totalOutput)})`}
+							>
+								{w > 8 ? `${p.phase} ${pct(p.outputTokens, totalOutput)}` : ''}
+							</div>
+						)
+					})}
+				</div>
+			</div>
+
 			<table className="w-full text-sm">
 				<thead>
 					<tr className="text-left text-(--text-dim) text-xs border-b border-(--border)">
@@ -220,8 +331,8 @@ function PhaseBreakdown({ phaseStats, totalCost, totalInput }: { phaseStats: Pha
 						<th className="pb-2 text-right">Input Tokens</th>
 						<th className="pb-2 text-right">Output Tokens</th>
 						<th className="pb-2 text-right">Cost</th>
-						<th className="pb-2 text-right">% of Cost</th>
-						<th className="pb-2 text-right">Avg Input/Call</th>
+						<th className="pb-2 text-right">Input Cost</th>
+						<th className="pb-2 text-right">Output Cost</th>
 						<th className="pb-2 text-right">Avg Cost/Call</th>
 					</tr>
 				</thead>
@@ -235,9 +346,20 @@ function PhaseBreakdown({ phaseStats, totalCost, totalInput }: { phaseStats: Pha
 							<td className="py-2 text-right font-mono">{p.calls}</td>
 							<td className="py-2 text-right font-mono">{fmt(p.inputTokens)}</td>
 							<td className="py-2 text-right font-mono">{fmt(p.outputTokens)}</td>
-							<td className="py-2 text-right font-mono">{fmtCost(p.cost)}</td>
-							<td className="py-2 text-right font-mono">{pct(p.cost, totalCost)}</td>
-							<td className="py-2 text-right font-mono">{fmt(p.avgInputTokens)}</td>
+							<td className="py-2 text-right font-mono">
+								{fmtCost(p.cost)}
+								<span className="text-(--text-dim) text-xs ml-1">{pct(p.cost, totalCost)}</span>
+							</td>
+							<td className="py-2 text-right font-mono text-(--text-dim)">
+								{fmtCost(p.inputCost)}
+								<span className="text-xs ml-1 opacity-60">{pct(p.inputCost, totalInputCost)}</span>
+								<span className="text-xs ml-1 opacity-40">{pct(p.inputCost, totalCost)}</span>
+							</td>
+							<td className="py-2 text-right font-mono text-(--text-dim)">
+								{fmtCost(p.outputCost)}
+								<span className="text-xs ml-1 opacity-60">{pct(p.outputCost, totalOutputCost)}</span>
+								<span className="text-xs ml-1 opacity-40">{pct(p.outputCost, totalCost)}</span>
+							</td>
 							<td className="py-2 text-right font-mono">{fmtCost(p.avgCost)}</td>
 						</tr>
 					))}
@@ -309,7 +431,7 @@ function CycleScorecard({ stats }: { stats: Statistics }) {
 		const fixTurns = fixSegs.reduce((s, f) => s + f.turnCount, 0)
 		const fixCost = fixSegs.reduce((s, f) => s + f.totalCost, 0)
 		const reReads = stats.repeatedFileReads.filter(r => r.cycleIndex === c.index)
-		const reReadCount = reReads.reduce((s, r) => s + r.readCount - 1, 0)
+		const reReadCount = reReads.length
 		const costPerOutput = c.totalOutputTokens > 0 ? (c.totalCost / c.totalOutputTokens) * 1000 : 0
 		const fixPct = c.totalCost > 0 ? (fixCost / c.totalCost) * 100 : 0
 
@@ -1151,27 +1273,26 @@ function CompressionAnalysis({ points }: { points: BuilderTurnPoint[] }) {
 function RepeatedFileReads({ reads }: { reads: RepeatedFileRead[] }) {
 	if (reads.length === 0) return null
 
-	const totalWastedReads = reads.reduce((s, r) => s + r.readCount - 1, 0)
-	const totalWastedChars = reads.reduce((s, r) => s + (r.totalChars / r.readCount) * (r.readCount - 1), 0)
+	const totalWastedChars = reads.reduce((s, r) => s + r.reReadChars, 0)
 	const uniqueFiles = new Set(reads.map(r => r.filePath)).size
 
 	return (
 		<section className="border border-(--border) rounded-lg p-5">
-			<h2 className="text-lg font-semibold mb-2">Repeated File Reads</h2>
+			<h2 className="text-lg font-semibold mb-2">Compression-Caused Re-reads</h2>
 			<p className="text-xs text-(--text-dim) mb-4">
-				Files read more than once within a single cycle. Re-reads happen because earlier tool results
-				were compressed away. Better tiered compression (keeping summaries instead of full redaction)
-				would eliminate most of these.
+				File reads where an earlier read of overlapping lines was compressed by the summarizer,
+				causing the agent to re-read the same content. Only counted when a summarizer batch ran between
+				the original read and the re-read, and the line ranges overlap.
 			</p>
 
 			<div className="grid grid-cols-3 gap-4 mb-4">
 				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Files Re-read</div>
+					<div className="text-xs text-(--text-dim)">Files Affected</div>
 					<div className="text-lg font-mono font-semibold text-(--warn)">{uniqueFiles}</div>
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Redundant Reads</div>
-					<div className="text-lg font-mono font-semibold text-(--warn)">{totalWastedReads}</div>
+					<div className="text-xs text-(--text-dim)">Re-reads</div>
+					<div className="text-lg font-mono font-semibold text-(--warn)">{reads.length}</div>
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
 					<div className="text-xs text-(--text-dim)">Wasted Context</div>
@@ -1184,29 +1305,43 @@ function RepeatedFileReads({ reads }: { reads: RepeatedFileRead[] }) {
 					<tr className="text-(--text-dim) border-b border-(--border)">
 						<th className="text-left pb-1 pr-3">File</th>
 						<th className="text-left pb-1 pr-3">Cycle</th>
-						<th className="text-right pb-1 pr-3">Reads</th>
-						<th className="text-right pb-1 pr-3">Total Chars</th>
-						<th className="text-left pb-1">Turns</th>
+						<th className="text-right pb-1 pr-3">Original Turn</th>
+						<th className="text-right pb-1 pr-3">Re-read Turn</th>
+						<th className="text-right pb-1 pr-3">Re-read Chars</th>
+						<th className="text-right pb-1 pr-3">Overlap Lines</th>
 					</tr>
 				</thead>
 				<tbody>
-					{reads.slice(0, 20).map((r, i) => (
-						<tr key={i} className="border-b border-(--border)/20">
-							<td className="py-1 pr-3 font-sans text-(--warn) max-w-50 truncate">{r.filePath.split('/').pop()}</td>
-							<td className="py-1 pr-3 font-sans text-(--text-dim) max-w-40 truncate">{r.cycleTitle}</td>
-							<td className="py-1 pr-3 text-right">{r.readCount}</td>
-							<td className="py-1 pr-3 text-right">{fmt(r.totalChars)}</td>
-							<td className="py-1 text-(--text-dim)">{r.turnNumbers.length <= 8 ? r.turnNumbers.join(', ') : `${r.turnNumbers.slice(0, 5).join(', ')}… +${r.turnNumbers.length - 5}`}</td>
-						</tr>
-					))}
+					{reads.slice(0, 20).map((r, i) => {
+						const origRange = r.originalEndLine > 0 ? `L${r.originalStartLine}-${r.originalEndLine}` : `L${r.originalStartLine}+`
+						const reRange = r.reReadEndLine > 0 ? `L${r.reReadStartLine}-${r.reReadEndLine}` : `L${r.reReadStartLine}+`
+						return (
+							<tr key={i} className="border-b border-(--border)/20">
+								<td className="py-1 pr-3 font-sans text-(--warn) max-w-50 truncate" title={r.filePath}>{r.filePath.split('/').pop()}</td>
+								<td className="py-1 pr-3 font-sans text-(--text-dim) max-w-40 truncate">{r.cycleTitle}</td>
+								<td className="py-1 pr-3 text-right">
+									<span className="text-(--text-dim)">{r.originalTurn}</span>
+									<span className="text-(--text-dim) opacity-50 ml-1">{origRange}</span>
+								</td>
+								<td className="py-1 pr-3 text-right">
+									<span>{r.reReadTurn}</span>
+									<span className="text-(--text-dim) opacity-50 ml-1">{reRange}</span>
+								</td>
+								<td className="py-1 pr-3 text-right">{fmt(r.reReadChars)}</td>
+								<td className="py-1 pr-3 text-right">{r.overlapLines > 1000 ? '∞' : r.overlapLines}</td>
+							</tr>
+						)
+					})}
 				</tbody>
 			</table>
 
-			<div className="mt-4 p-3 bg-(--bg-hover) rounded-lg text-xs text-(--text-dim)">
-				Keeping a one-line summary of each tool result (file path + line count + key exports)
-				instead of full redaction would prevent {totalWastedReads} redundant reads, saving
-				~{fmt(totalWastedChars * 0.25)} tokens of re-fetched context.
-			</div>
+			{reads.length > 0 && (
+				<div className="mt-4 p-3 bg-(--bg-hover) rounded-lg text-xs text-(--text-dim)">
+					These re-reads were specifically caused by the summarizer compressing overlapping line ranges.
+					Keeping more lines in the compressed results would prevent {reads.length} re-reads,
+					saving ~{fmt(totalWastedChars * 0.25)} tokens of re-fetched context.
+				</div>
+			)}
 		</section>
 	)
 }
@@ -1656,8 +1791,8 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 	const fixCacheSavings = (avgFixFirstMsgTokens * totalFixTurns * 0.9 * rate) / 1_000_000 / Math.max(stats.cycleCount, 1)
 	const spikesSavings = (byCycleSpikes * rate) / 1_000_000 / Math.max(stats.cycleCount, 1)
 
-	const totalWastedReReadChars = stats.repeatedFileReads.reduce((s, r) => s + (r.totalChars / r.readCount) * (r.readCount - 1), 0)
-	const totalWastedReReads = stats.repeatedFileReads.reduce((s, r) => s + r.readCount - 1, 0)
+	const totalWastedReReadChars = stats.repeatedFileReads.reduce((s, r) => s + r.reReadChars, 0)
+	const totalWastedReReads = stats.repeatedFileReads.length
 	const lateFullTokenEstimate = totalLateFullResults > 0
 		? Math.round(stats.builderTurnPoints.filter(p => p.turnInPhase > 3).reduce((s, p) => s + p.fullToolResults * (p.largestToolResultChars || 500), 0) / 4)
 		: 0
@@ -1730,7 +1865,7 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 			savings: totalLateFullResults > 0 ? `~${fmt(lateFullTokenEstimate)} tok/cycle` : 'N/A',
 			dollarSavings: tieredCompressionSavings,
 			impact: totalLateFullResults > 0 ? 'MEDIUM-HIGH' : 'N/A',
-			description: `${totalLateFullResults} full tool results in late turns (>3) suggest re-reads. ${totalWastedReReads > 0 ? `${totalWastedReReads} redundant file reads totaling ~${fmt(totalWastedReReadChars)} wasted chars. ` : ''}A tiered summarization approach would preserve key information while still reducing context.`,
+			description: `${totalLateFullResults} full tool results in late turns (>3) suggest re-reads. ${totalWastedReReads > 0 ? `${totalWastedReReads} verified compression-caused re-reads totaling ~${fmt(totalWastedReReadChars)} wasted chars. ` : ''}Keeping more lines in compressed results would reduce these re-reads.`,
 			applicable: totalLateFullResults > 0,
 		},
 		{

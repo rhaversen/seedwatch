@@ -24,19 +24,21 @@ export default async function MemoriesPage() {
 		<div>
 			<h1 className="text-2xl font-semibold mb-6">Memories</h1>
 
-			{notes.length > 0 && (
-				<section className="mb-8">
-					<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-						<span>📌</span> Notes to Self
-						<span className="text-sm font-normal text-(--text-dim)">({notes.length})</span>
-					</h2>
+			<section className="mb-8">
+				<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+					<span>📌</span> Notes to Self
+					<span className="text-sm font-normal text-(--text-dim)">({notes.length})</span>
+				</h2>
+				{notes.length === 0 ? (
+					<p className="text-(--text-dim) text-sm italic">No notes yet</p>
+				) : (
 					<div className="space-y-2">
 						{notes.map(m => (
 							<MemoryCard key={m._id} memory={m} />
 						))}
 					</div>
-				</section>
-			)}
+				)}
+			</section>
 
 			<section className="mb-8">
 				<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
@@ -44,7 +46,7 @@ export default async function MemoriesPage() {
 					<span className="text-sm font-normal text-(--text-dim)">({reflections.length})</span>
 				</h2>
 				{reflections.length === 0 ? (
-					<p className="text-(--text-dim)">No reflections yet</p>
+					<p className="text-(--text-dim) text-sm italic">No reflections yet</p>
 				) : (
 					<div className="space-y-2">
 						{reflections.map(m => (
@@ -54,19 +56,21 @@ export default async function MemoriesPage() {
 				)}
 			</section>
 
-			{dismissed.length > 0 && (
-				<section>
-					<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-						<span>🗑️</span> Dismissed
-						<span className="text-sm font-normal text-(--text-dim)">({dismissed.length})</span>
-					</h2>
+			<section className="mb-8">
+				<h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
+					<span>🗑️</span> Dismissed
+					<span className="text-sm font-normal text-(--text-dim)">({dismissed.length})</span>
+				</h2>
+				{dismissed.length === 0 ? (
+					<p className="text-(--text-dim) text-sm italic">No dismissed notes</p>
+				) : (
 					<div className="space-y-2">
 						{dismissed.map(m => (
 							<MemoryCard key={m._id} memory={m} />
 						))}
 					</div>
-				</section>
-			)}
+				)}
+			</section>
 		</div>
 	)
 }

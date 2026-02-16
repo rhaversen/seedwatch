@@ -3,6 +3,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect, Fragment } from 'react'
 import type { GeneratedTurn as Turn } from '@/lib/data'
 import { phaseColors, phaseIcons } from '@/lib/phases'
+import { SmartContent } from './SmartContent'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MessageBlock = Record<string, any>
@@ -253,34 +254,40 @@ export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selec
 				isFirst={currentTurn === 0}
 			/>
 
-			{/* Messages */}
-			<div className="space-y-1 mt-3">
-				{classified.map((cm, i) => (
-					<div key={i} className="relative overflow-hidden">
-						{anim !== null && cm.status === 'changed' && cm.prevMsg && (
-							<div className={`absolute inset-x-0 top-0 z-0 ${exitAnim} pointer-events-none`}>
-								<MessageBubble message={cm.prevMsg} muted />
-							</div>
-						)}
-						<div className={cm.status !== 'unchanged' && anim !== null ? `relative z-10 ${enterAnim}` : ''}>
-							<MessageBubble
-								message={cm.msg}
-								prevMessage={cm.prevMsg}
-								muted={cm.status === 'unchanged'}
-								variant={cm.status}
-								summarizerMap={summarizerMap}
-							/>
-						</div>
+			<div className="mt-3">
+				{/* Messages */}
+				<div className="space-y-1">
+						{classified.map((cm, i) => {
+							return (
+								<div key={i} className="relative overflow-hidden">
+									{anim !== null && cm.status === 'changed' && cm.prevMsg && (
+										<div className={`absolute inset-x-0 top-0 z-0 ${exitAnim} pointer-events-none`}>
+											<MessageBubble message={cm.prevMsg} muted />
+										</div>
+									)}
+									<div
+										className={`${cm.status !== 'unchanged' && anim !== null ? `relative z-10 ${enterAnim}` : ''}`}
+									>
+										<MessageBubble
+											message={cm.msg}
+											prevMessage={cm.prevMsg}
+											muted={cm.status === 'unchanged'}
+											variant={cm.status}
+											summarizerMap={summarizerMap}
+										/>
+									</div>
+								</div>
+							)
+						})}
 					</div>
-				))}
-			</div>
 
-			{/* Response */}
-			<div className={`mt-3 ${anim !== null ? enterAnim : ''}`}>
-				<div className="text-xs font-semibold text-(--warn) mb-1">Response</div>
-				{(turn.response as MessageBlock[]).map((block, i) => (
-					<ResponseBlock key={i} block={block} />
-				))}
+					{/* Response */}
+					<div className={`mt-3 ${anim !== null ? enterAnim : ''}`}>
+						<div className="text-xs font-semibold text-(--warn) mb-1">Response</div>
+						{(turn.response as MessageBlock[]).map((block, i) => (
+							<ResponseBlock key={i} block={block} />
+						))}
+					</div>
 			</div>
 
 			{/* Inline overhead markers (non-summarizer only — summarizer is shown inline on messages) */}
@@ -662,9 +669,11 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 					<DiffView prev={prevContent} curr={content} />
 				) : (
 					<div>
-						<pre className={`text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-[32rem] overflow-y-auto`}>
-							{showAll || content.length <= 10_000 ? content : content.slice(0, 10_000)}
-						</pre>
+						<SmartContent
+							text={showAll || content.length <= 10_000 ? content : content.slice(0, 10_000)}
+							className="text-(--text-dim)"
+							maxHeight="32rem"
+						/>
 						{!showAll && content.length > 10_000 && (
 							<button
 								onClick={() => setShowAll(true)}
@@ -727,9 +736,9 @@ function ContentBlocksWithAnnotations({ blocks, summarizerMap, annotatedIds, exp
 				if (!text) return null
 
 				return (
-					<pre key={i} className={`text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) ${expanded ? '' : 'line-clamp-2'}`}>
-						{expanded ? text : text.slice(0, 200)}{!expanded && text.length > 200 ? '…' : ''}
-					</pre>
+					<div key={i} className={expanded ? '' : 'line-clamp-2'}>
+						<SmartContent text={expanded ? text : text.slice(0, 200) + (text.length > 200 ? '…' : '')} className="text-(--text-dim)" maxHeight={expanded ? '32rem' : 'none'} />
+					</div>
 				)
 			})}
 		</div>
@@ -763,9 +772,7 @@ function ToolResultBlock({ toolUseId, content, prevContent, expanded, hasDiff }:
 				hasDiff && prevContent ? (
 					<DiffView prev={prevContent} curr={content} />
 				) : (
-					<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-40 overflow-y-auto">
-						{content.slice(0, 6000)}{content.length > 6000 ? '\n…(truncated)' : ''}
-					</pre>
+					<SmartContent text={content.slice(0, 6000) + (content.length > 6000 ? '\n…(truncated)' : '')} className="text-(--text-dim)" maxHeight="10rem" />
 				)
 			) : (
 				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) line-clamp-2">
@@ -837,25 +844,22 @@ function ResponseBlock({ block }: { block: MessageBlock }) {
 	if (block.type === 'text') {
 		return (
 			<div className="border border-(--border) rounded-lg p-3 mb-1">
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono max-h-80 overflow-y-auto">{block.text}</pre>
+				<SmartContent text={block.text ?? ''} maxHeight="20rem" />
 			</div>
 		)
 	}
 	if (block.type === 'tool_use') {
+		const inputText = typeof block.input === 'object' ? JSON.stringify(block.input, null, 2) : String(block.input ?? '')
 		return (
 			<div className="border border-[#2d3a20] rounded-lg p-3 mb-1">
 				<div className="text-xs font-semibold text-(--accent) mb-1">🔧 {block.name}</div>
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-80 overflow-y-auto">
-					{JSON.stringify(block.input, null, 2)}
-				</pre>
+				<SmartContent text={inputText} className="text-(--text-dim)" maxHeight="20rem" />
 			</div>
 		)
 	}
 	return (
 		<div className="border border-(--border) rounded-lg p-3 mb-1">
-			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-80 overflow-y-auto">
-				{JSON.stringify(block, null, 2)}
-			</pre>
+			<SmartContent text={JSON.stringify(block, null, 2)} className="text-(--text-dim)" maxHeight="20rem" />
 		</div>
 	)
 }

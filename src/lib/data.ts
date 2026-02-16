@@ -3,6 +3,35 @@ import { GeneratedModel, MemoryModel, IterationLogModel } from './models'
 import type { IGenerated, IMemory, IIterationLog, MemoryCategory } from './models'
 import { OVERHEAD_PHASES } from './phases'
 
+interface ModelPricing {
+	inputPerMTok: number
+	cacheWrite5mPerMTok: number
+	cacheWrite1hPerMTok: number
+	cacheReadPerMTok: number
+	outputPerMTok: number
+}
+
+const PRICING: Record<string, ModelPricing> = {
+	'claude-opus-4-6':   { inputPerMTok: 5,    cacheWrite5mPerMTok: 6.25,  cacheWrite1hPerMTok: 10,   cacheReadPerMTok: 0.50, outputPerMTok: 25   },
+	'claude-sonnet-4-5': { inputPerMTok: 3,    cacheWrite5mPerMTok: 3.75,  cacheWrite1hPerMTok: 6,    cacheReadPerMTok: 0.30, outputPerMTok: 15   },
+	'claude-haiku-4-5':  { inputPerMTok: 1,    cacheWrite5mPerMTok: 1.25,  cacheWrite1hPerMTok: 2,    cacheReadPerMTok: 0.10, outputPerMTok: 5    },
+}
+
+const DEFAULT_PRICING: ModelPricing = { inputPerMTok: 5, cacheWrite5mPerMTok: 6.25, cacheWrite1hPerMTok: 10, cacheReadPerMTok: 0.50, outputPerMTok: 25 }
+
+function splitCost(t: GeneratedTurn): { inputCost: number; outputCost: number } {
+	const pricing = PRICING[t.modelId] ?? DEFAULT_PRICING
+	const totalCacheWrite = t.cacheWrite5mTokens + t.cacheWrite1hTokens
+	const uncached = Math.max(0, t.inputTokens - totalCacheWrite - t.cacheReadTokens)
+	const inputCost = (uncached * pricing.inputPerMTok
+		+ t.cacheWrite5mTokens * pricing.cacheWrite5mPerMTok
+		+ t.cacheWrite1hTokens * pricing.cacheWrite1hPerMTok
+		+ t.cacheReadTokens * pricing.cacheReadPerMTok) / 1_000_000
+	const outputCost = (t.outputTokens * pricing.outputPerMTok) / 1_000_000
+	const multiplier = t.batch ? 0.5 : 1
+	return { inputCost: inputCost * multiplier, outputCost: outputCost * multiplier }
+}
+
 function serialize<T>(doc: T): T {
 	return JSON.parse(JSON.stringify(doc))
 }
@@ -201,6 +230,8 @@ export interface PhaseStats {
 	cacheWrite1hTokens: number
 	cacheReadTokens: number
 	cost: number
+	inputCost: number
+	outputCost: number
 	avgInputTokens: number
 	avgOutputTokens: number
 	avgCost: number
@@ -309,9 +340,14 @@ export interface RepeatedFileRead {
 	cycleIndex: number
 	cycleTitle: string
 	filePath: string
-	readCount: number
-	totalChars: number
-	turnNumbers: number[]
+	reReadTurn: number
+	originalTurn: number
+	reReadChars: number
+	originalStartLine: number
+	originalEndLine: number
+	reReadStartLine: number
+	reReadEndLine: number
+	overlapLines: number
 }
 
 export interface CostEfficiencyBand {
@@ -321,6 +357,23 @@ export interface CostEfficiencyBand {
 	totalOutput: number
 	costPer1kOutput: number
 	avgInputTokens: number
+}
+
+export interface CostVelocity {
+	firstCycleAt: string
+	lastCycleAt: string
+	totalElapsedHours: number
+	costPerHour: number
+	costPerDay: number
+	projectedMonthlyCost: number
+	cyclesPerDay: number
+	avgCycleDurationMinutes: number
+	medianCycleDurationMinutes: number
+	minCycleDurationMinutes: number
+	maxCycleDurationMinutes: number
+	avgCycleCost: number
+	medianCycleCost: number
+	costTrend: { cycleIndex: number; cost: number; durationMinutes: number; cumulativeCost: number }[]
 }
 
 export interface Statistics {
@@ -347,6 +400,7 @@ export interface Statistics {
 	phaseProductivity: PhaseProductivity[]
 	repeatedFileReads: RepeatedFileRead[]
 	costEfficiencyBands: CostEfficiencyBand[]
+	costVelocity: CostVelocity | null
 	effectiveInputRate: number
 	modelsByPhase: Record<string, string>
 }
@@ -491,9 +545,9 @@ export async function getStatistics(): Promise<Statistics> {
 	const cycleCount = cycles.length
 
 	// Phase stats
-	const phaseMap = new Map<string, { calls: number; inputTokens: number; outputTokens: number; cacheWrite5mTokens: number; cacheWrite1hTokens: number; cacheReadTokens: number; cost: number }>()
+	const phaseMap = new Map<string, { calls: number; inputTokens: number; outputTokens: number; cacheWrite5mTokens: number; cacheWrite1hTokens: number; cacheReadTokens: number; cost: number; inputCost: number; outputCost: number }>()
 	for (const t of turns) {
-		const p = phaseMap.get(t.phase) ?? { calls: 0, inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheReadTokens: 0, cost: 0 }
+		const p = phaseMap.get(t.phase) ?? { calls: 0, inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, cacheReadTokens: 0, cost: 0, inputCost: 0, outputCost: 0 }
 		p.calls++
 		p.inputTokens += t.inputTokens
 		p.outputTokens += t.outputTokens
@@ -501,6 +555,9 @@ export async function getStatistics(): Promise<Statistics> {
 		p.cacheWrite1hTokens += t.cacheWrite1hTokens
 		p.cacheReadTokens += t.cacheReadTokens
 		p.cost += t.cost
+		const split = splitCost(t)
+		p.inputCost += split.inputCost
+		p.outputCost += split.outputCost
 		phaseMap.set(t.phase, p)
 	}
 	const phaseStats: PhaseStats[] = [...phaseMap.entries()].map(([phase, p]) => ({
@@ -786,50 +843,117 @@ export async function getStatistics(): Promise<Statistics> {
 		makeProductivity('Fix phases', fixPts),
 	]
 
-	// Repeated file reads: extract file paths from read_file tool_use in the response (new actions per turn)
-	const fileReadMap = new Map<string, { count: number; totalChars: number; turns: Set<number> }>()
+	// Repeated file reads caused by compression:
+	// Only count a re-read as redundant if an earlier read of overlapping lines was compressed (gap markers injected)
+	// between the two reads, meaning the summarizer removed context the agent later needed again.
+	const GAP_MARKER = '[Lines omitted from context.'
+	const repeatedFileReads: RepeatedFileRead[] = []
+
 	for (let ci = 0; ci < cycles.length; ci++) {
-		const builderTurns = cycles[ci].filter(t => t.phase === 'builder')
-		for (let bi = 0; bi < builderTurns.length; bi++) {
-			const t = builderTurns[bi]
-			const resp = (t.response ?? []) as AnyMsg[]
-			const nextMsgs = bi + 1 < builderTurns.length ? (builderTurns[bi + 1].messages ?? []) as AnyMsg[] : []
-			for (const block of resp) {
-				if (block.type === 'tool_use' && block.name === 'read_file') {
-					const fp = block.input?.filePath ?? block.input?.path ?? ''
-					if (!fp) continue
-					const key = `${ci}::${fp}`
-					const entry = fileReadMap.get(key) ?? { count: 0, totalChars: 0, turns: new Set<number>() }
-					entry.count++
-					entry.turns.add(bi + 1)
-					const resultBlock = nextMsgs
-						.filter((m: AnyMsg) => m.role === 'user' && Array.isArray(m.content))
-						.flatMap((m: AnyMsg) => m.content)
-						.find((b: AnyMsg) => b.type === 'tool_result' && b.tool_use_id === block.id)
-					if (resultBlock) {
-						const text = typeof resultBlock.content === 'string' ? resultBlock.content : ''
-						entry.totalChars += text.length
+		const cycleTurns = cycles[ci]
+		const title = extractPlanTitle(cycleTurns)
+
+		interface ReadRecord {
+			toolUseId: string
+			filePath: string
+			startLine: number
+			endLine: number
+			turnIdx: number
+			compressed: boolean
+		}
+
+		const reads: ReadRecord[] = []
+		let lastSummarizerIdx = -1
+
+		for (let ti = 0; ti < cycleTurns.length; ti++) {
+			const t = cycleTurns[ti]
+
+			if (t.phase === 'summarizer') {
+				lastSummarizerIdx = ti
+				// Check which prior reads got compressed by looking at tool_results in the messages
+				// of the NEXT non-summarizer turn
+				continue
+			}
+
+			// Check if any prior reads were compressed in this turn's messages
+			const msgs = (t.messages ?? []) as AnyMsg[]
+			for (const read of reads) {
+				if (read.compressed) continue
+				for (const msg of msgs) {
+					if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
+					for (const block of msg.content) {
+						if (block.type !== 'tool_result' || block.tool_use_id !== read.toolUseId) continue
+						const text = typeof block.content === 'string' ? block.content : ''
+						if (text.includes(GAP_MARKER)) {
+							read.compressed = true
+						}
 					}
-					fileReadMap.set(key, entry)
 				}
+			}
+
+			if (t.phase !== 'builder' && t.phase !== 'planner') continue
+
+			// Extract new read_file actions from this turn's response
+			const resp = (t.response ?? []) as AnyMsg[]
+			for (const block of resp) {
+				if (block.type !== 'tool_use' || block.name !== 'read_file') continue
+				const fp = block.input?.filePath ?? block.input?.path ?? ''
+				if (!fp) continue
+				const startLine = Number(block.input?.startLine) || 1
+				const endLine = Number(block.input?.endLine) || Infinity
+
+				// Check if this is a re-read of lines that were compressed away from an earlier read
+				for (const prior of reads) {
+					if (prior.filePath !== fp) continue
+					if (!prior.compressed) continue
+					// A summarizer must have run between the original read and this re-read
+					if (lastSummarizerIdx <= prior.turnIdx) continue
+
+					// Check line range overlap
+					const overlapStart = Math.max(prior.startLine, startLine)
+					const overlapEnd = Math.min(prior.endLine, endLine)
+					if (overlapStart > overlapEnd) continue
+
+					// Find the result chars for this re-read from the next turn's messages
+					const nextTurn = cycleTurns[ti + 1]
+					const nextMsgs = nextTurn ? (nextTurn.messages ?? []) as AnyMsg[] : []
+					let reReadChars = 0
+					for (const m of nextMsgs) {
+						if (m.role !== 'user' || !Array.isArray(m.content)) continue
+						for (const b of m.content) {
+							if (b.type === 'tool_result' && b.tool_use_id === block.id) {
+								reReadChars = typeof b.content === 'string' ? b.content.length : 0
+							}
+						}
+					}
+
+					repeatedFileReads.push({
+						cycleIndex: ci,
+						cycleTitle: title,
+						filePath: fp,
+						reReadTurn: ti + 1,
+						originalTurn: prior.turnIdx + 1,
+						reReadChars,
+						originalStartLine: prior.startLine,
+						originalEndLine: prior.endLine === Infinity ? 0 : prior.endLine,
+						reReadStartLine: startLine,
+						reReadEndLine: endLine === Infinity ? 0 : endLine,
+						overlapLines: overlapEnd - overlapStart + 1,
+					})
+				}
+
+				reads.push({
+					toolUseId: block.id,
+					filePath: fp,
+					startLine: startLine,
+					endLine: endLine,
+					turnIdx: ti,
+					compressed: false,
+				})
 			}
 		}
 	}
-	const repeatedFileReads: RepeatedFileRead[] = [...fileReadMap.entries()]
-		.filter(([, data]) => data.count > 1)
-		.map(([key, data]) => {
-			const [ciStr, ...fpParts] = key.split('::')
-			const ci = parseInt(ciStr)
-			return {
-				cycleIndex: ci,
-				cycleTitle: extractPlanTitle(cycles[ci]),
-				filePath: fpParts.join('::'),
-				readCount: data.count,
-				totalChars: data.totalChars,
-				turnNumbers: [...data.turns].sort((a, b) => a - b),
-			}
-		})
-		.sort((a, b) => b.readCount - a.readCount)
+	repeatedFileReads.sort((a, b) => a.cycleIndex - b.cycleIndex || a.reReadTurn - b.reReadTurn)
 
 	// Cost efficiency bands: group builder turns by turn-number ranges
 	const bandDefs = [
@@ -864,6 +988,60 @@ export async function getStatistics(): Promise<Statistics> {
 		}
 	}
 
+	// Cost velocity
+	let costVelocity: CostVelocity | null = null
+	if (cycles.length >= 2) {
+		const cycleDurations: { index: number; cost: number; durationMinutes: number }[] = []
+		let cumulativeCost = 0
+		for (let i = 0; i < cycles.length; i++) {
+			const c = cycles[i]
+			const first = new Date(c[0].createdAt).getTime()
+			const last = new Date(c[c.length - 1].createdAt).getTime()
+			const durationMinutes = Math.max((last - first) / 60_000, 0.1)
+			const cost = c.reduce((s, t) => s + t.cost, 0)
+			cumulativeCost += cost
+			cycleDurations.push({ index: i, cost, durationMinutes })
+		}
+
+		const firstCycleAt = cycles[0][0].createdAt
+		const lastCycleAt = cycles[cycles.length - 1][cycles[cycles.length - 1].length - 1].createdAt
+		const totalElapsedMs = new Date(lastCycleAt).getTime() - new Date(firstCycleAt).getTime()
+		const totalElapsedHours = Math.max(totalElapsedMs / 3_600_000, 0.01)
+
+		const sortedDurations = cycleDurations.map(d => d.durationMinutes).sort((a, b) => a - b)
+		const sortedCosts = cycleDurations.map(d => d.cost).sort((a, b) => a - b)
+		const median = (arr: number[]) => arr.length % 2 === 0
+			? (arr[arr.length / 2 - 1] + arr[arr.length / 2]) / 2
+			: arr[Math.floor(arr.length / 2)]
+
+		const costPerHour = totalCost / totalElapsedHours
+		const costPerDay = costPerHour * 24
+		const cyclesPerDay = cycles.length / (totalElapsedHours / 24)
+
+		let cumCost = 0
+		const costTrend = cycleDurations.map(d => {
+			cumCost += d.cost
+			return { cycleIndex: d.index, cost: d.cost, durationMinutes: d.durationMinutes, cumulativeCost: cumCost }
+		})
+
+		costVelocity = {
+			firstCycleAt,
+			lastCycleAt,
+			totalElapsedHours,
+			costPerHour,
+			costPerDay,
+			projectedMonthlyCost: costPerDay * 30,
+			cyclesPerDay,
+			avgCycleDurationMinutes: sortedDurations.reduce((s, d) => s + d, 0) / sortedDurations.length,
+			medianCycleDurationMinutes: median(sortedDurations),
+			minCycleDurationMinutes: sortedDurations[0],
+			maxCycleDurationMinutes: sortedDurations[sortedDurations.length - 1],
+			avgCycleCost: totalCost / cycles.length,
+			medianCycleCost: median(sortedCosts),
+			costTrend,
+		}
+	}
+
 	return {
 		cycleCount,
 		totalCost,
@@ -888,6 +1066,7 @@ export async function getStatistics(): Promise<Statistics> {
 		phaseProductivity,
 		repeatedFileReads,
 		costEfficiencyBands,
+		costVelocity,
 		effectiveInputRate,
 		modelsByPhase,
 	}

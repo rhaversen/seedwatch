@@ -38,6 +38,7 @@ function generateMarkdown(stats: Statistics): string {
 
 	generateExecutiveSummary(stats, push, blank)
 	generateToplineStats(stats, push, blank)
+	generateCostVelocity(stats, push, blank)
 	generatePhaseBreakdown(stats, push, blank)
 	generateCycleComparison(stats, push, blank)
 	generateCycleScorecard(stats, push, blank)
@@ -65,7 +66,7 @@ function generateExecutiveSummary(stats: Statistics, push: (...s: string[]) => v
 	const fixCostPct = fixProd ? (fixProd.totalCost / stats.totalCost) * 100 : 0
 	const fixCostMultiplier = fixProd && buildProd && buildProd.costPerOutputToken > 0
 		? fixProd.costPerOutputToken / buildProd.costPerOutputToken : 0
-	const totalReReads = stats.repeatedFileReads.reduce((s, r) => s + r.readCount - 1, 0)
+	const totalReReads = stats.repeatedFileReads.length
 	const uncachedBuilder = stats.systemPromptBreakdowns.find(b => b.phase === 'builder')
 	const uncachedChars = uncachedBuilder?.blocks.filter(b => !b.cached).reduce((s, b) => s + b.chars, 0) ?? 0
 	const uncachedTokens = Math.round(uncachedChars / 4)
@@ -123,19 +124,54 @@ function generateToplineStats(stats: Statistics, push: (...s: string[]) => void,
 	blank()
 }
 
+function fmtDuration(minutes: number): string {
+	if (minutes < 1) return `${Math.round(minutes * 60)}s`
+	if (minutes < 60) return `${minutes.toFixed(1)}m`
+	const h = Math.floor(minutes / 60)
+	const m = Math.round(minutes % 60)
+	return m > 0 ? `${h}h ${m}m` : `${h}h`
+}
+
+function generateCostVelocity(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {
+	const v = stats.costVelocity
+	if (!v) return
+
+	push(`## Cost Velocity`)
+	blank()
+	push(mdTable(
+		['Metric', 'Value'],
+		[
+			['Cost / Hour', fmtCost(v.costPerHour)],
+			['Cost / Day', fmtCost(v.costPerDay)],
+			['Projected / Month', fmtCost(v.projectedMonthlyCost)],
+			['Cycles / Day', v.cyclesPerDay.toFixed(1)],
+			['Avg Cycle Duration', fmtDuration(v.avgCycleDurationMinutes)],
+			['Median Cycle Duration', fmtDuration(v.medianCycleDurationMinutes)],
+			['Fastest Cycle', fmtDuration(v.minCycleDurationMinutes)],
+			['Slowest Cycle', fmtDuration(v.maxCycleDurationMinutes)],
+			['Avg Cost / Cycle', fmtCost(v.avgCycleCost)],
+			['Median Cost / Cycle', fmtCost(v.medianCycleCost)],
+		],
+	))
+	blank()
+}
+
 function generatePhaseBreakdown(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {
+	const totalInputCost = stats.phaseStats.reduce((s, p) => s + p.inputCost, 0)
+	const totalOutputCost = stats.phaseStats.reduce((s, p) => s + p.outputCost, 0)
+	const totalOutput = stats.phaseStats.reduce((s, p) => s + p.outputTokens, 0)
 	push(`## Phase Breakdown`)
 	blank()
 	push(mdTable(
-		['Phase', 'Calls', 'Input Tokens', 'Output Tokens', 'Cost', '% of Cost', 'Avg Input/Call', 'Avg Cost/Call'],
+		['Phase', 'Calls', 'Input Tokens', 'Output Tokens (% output)', 'Cost (% total)', 'Input Cost (% input / % total)', 'Output Cost (% output / % total)', 'Avg Cost/Call'],
 		stats.phaseStats.map(p => [
 			p.phase,
 			String(p.calls),
 			fmt(p.inputTokens),
-			fmt(p.outputTokens),
-			fmtCost(p.cost),
-			pct(p.cost, stats.totalCost),
-			fmt(p.avgInputTokens),
+			`${fmt(p.outputTokens)} (${pct(p.outputTokens, totalOutput)})`,
+			`${fmtCost(p.cost)} (${pct(p.cost, stats.totalCost)})`,
+			`${fmtCost(p.inputCost)} (${pct(p.inputCost, totalInputCost)} / ${pct(p.inputCost, stats.totalCost)})`,
+			`${fmtCost(p.outputCost)} (${pct(p.outputCost, totalOutputCost)} / ${pct(p.outputCost, stats.totalCost)})`,
 			fmtCost(p.avgCost),
 		]),
 	))
@@ -167,7 +203,7 @@ function generateCycleScorecard(stats: Statistics, push: (...s: string[]) => voi
 		const fixTurns = fixSegs.reduce((s, f) => s + f.turnCount, 0)
 		const fixCost = fixSegs.reduce((s, f) => s + f.totalCost, 0)
 		const reReads = stats.repeatedFileReads.filter(r => r.cycleIndex === c.index)
-		const reReadCount = reReads.reduce((s, r) => s + r.readCount - 1, 0)
+		const reReadCount = reReads.length
 		const costPerOutput = c.totalOutputTokens > 0 ? (c.totalCost / c.totalOutputTokens) * 1000 : 0
 		const fixPct = c.totalCost > 0 ? (fixCost / c.totalCost) * 100 : 0
 		return { title: c.title, turns: c.builderTurns, fixPhases: fixSegs.length, fixTurns, fixPct, reReads: reReadCount, costPerOutput, totalCost: c.totalCost }
@@ -629,36 +665,37 @@ function generateRepeatedFileReads(stats: Statistics, push: (...s: string[]) => 
 	const reads = stats.repeatedFileReads
 	if (reads.length === 0) return
 
-	const totalWastedReads = reads.reduce((s, r) => s + r.readCount - 1, 0)
-	const totalWastedChars = reads.reduce((s, r) => s + (r.totalChars / r.readCount) * (r.readCount - 1), 0)
+	const totalWastedChars = reads.reduce((s, r) => s + r.reReadChars, 0)
 	const uniqueFiles = new Set(reads.map(r => r.filePath)).size
 
-	push(`## Repeated File Reads`)
+	push(`## Compression-Caused Re-reads`)
 	blank()
-	push(`Files read more than once within a single cycle.`)
+	push(`File re-reads where an earlier read of overlapping lines was compressed by the summarizer.`)
 	blank()
 
 	push(mdTable(
 		['Metric', 'Value'],
 		[
-			['Files Re-read', String(uniqueFiles)],
-			['Redundant Reads', String(totalWastedReads)],
+			['Files Affected', String(uniqueFiles)],
+			['Re-reads', String(reads.length)],
 			['Wasted Context', `${fmt(totalWastedChars)} ch`],
 		],
 	))
 	blank()
 
 	push(mdTable(
-		['File', 'Cycle', 'Reads', 'Total Chars', 'Turns'],
+		['File', 'Cycle', 'Orig Turn', 'Re-read Turn', 'Re-read Chars', 'Overlap'],
 		reads.slice(0, 20).map(r => [
 			r.filePath.split('/').pop() ?? r.filePath, r.cycleTitle,
-			String(r.readCount), fmt(r.totalChars),
-			r.turnNumbers.length <= 8 ? r.turnNumbers.join(', ') : `${r.turnNumbers.slice(0, 5).join(', ')}… +${r.turnNumbers.length - 5}`,
+			`${r.originalTurn} (L${r.originalStartLine}-${r.originalEndLine || '∞'})`,
+			`${r.reReadTurn} (L${r.reReadStartLine}-${r.reReadEndLine || '∞'})`,
+			fmt(r.reReadChars),
+			r.overlapLines > 1000 ? '∞' : String(r.overlapLines),
 		]),
 	))
 	blank()
 
-	push(`> Keeping a one-line summary of each tool result instead of full redaction would prevent ${totalWastedReads} redundant reads, saving ~${fmt(totalWastedChars * 0.25)} tokens of re-fetched context.`)
+	push(`> These re-reads were caused by the summarizer compressing overlapping line ranges. Keeping more lines in compressed results would prevent ${reads.length} re-reads, saving ~${fmt(totalWastedChars * 0.25)} tokens.`)
 	blank()
 }
 
@@ -906,8 +943,8 @@ function generateOptimizationOpportunities(stats: Statistics, push: (...s: strin
 	const fixCacheSavings = (avgFixFirstMsgTokens * totalFixTurns * 0.9 * rate) / 1_000_000 / Math.max(stats.cycleCount, 1)
 	const spikesSavings = (byCycleSpikes * rate) / 1_000_000 / Math.max(stats.cycleCount, 1)
 
-	const totalWastedReReadChars = stats.repeatedFileReads.reduce((s, r) => s + (r.totalChars / r.readCount) * (r.readCount - 1), 0)
-	const totalWastedReReads = stats.repeatedFileReads.reduce((s, r) => s + r.readCount - 1, 0)
+	const totalWastedReReadChars = stats.repeatedFileReads.reduce((s, r) => s + r.reReadChars, 0)
+	const totalWastedReReads = stats.repeatedFileReads.length
 	const lateFullTokenEstimate = totalLateFullResults > 0
 		? Math.round(stats.builderTurnPoints.filter(p => p.turnInPhase > 3).reduce((s, p) => s + p.fullToolResults * (p.largestToolResultChars || 500), 0) / 4) : 0
 	const tieredCompressionSavings = lateFullTokenEstimate > 0 ? (lateFullTokenEstimate * rate) / 1_000_000 : 0
@@ -972,12 +1009,12 @@ function generateOptimizationOpportunities(stats: Statistics, push: (...s: strin
 			applicable: shortMemoryCalls > 0,
 		},
 		{
-			title: 'Tiered compression instead of binary redaction',
-			savings: totalLateFullResults > 0 ? `~${fmt(lateFullTokenEstimate)} tok/cycle` : 'N/A',
-			dollarSavings: tieredCompressionSavings,
-			impact: totalLateFullResults > 0 ? 'MEDIUM-HIGH' : 'N/A',
-			description: `${totalLateFullResults} full tool results in late turns (>3) suggest re-reads. ${totalWastedReReads > 0 ? `${totalWastedReReads} redundant file reads totaling ~${fmt(totalWastedReReadChars)} wasted chars. ` : ''}A tiered summarization approach would preserve key information while still reducing context.`,
-			applicable: totalLateFullResults > 0,
+			title: 'Reduce compression-caused re-reads',
+			savings: totalWastedReReads > 0 ? `~${fmt(Math.round(totalWastedReReadChars / 4))} tok/cycle` : 'N/A',
+			dollarSavings: totalWastedReReads > 0 ? (totalWastedReReadChars / 4 * rate) / 1_000_000 : 0,
+			impact: totalWastedReReads > 0 ? 'MEDIUM' : 'N/A',
+			description: `${totalWastedReReads} re-reads caused by compression totaling ~${fmt(totalWastedReReadChars)} wasted chars. Preserving critical line ranges during summarization would avoid these re-reads.`,
+			applicable: totalWastedReReads > 0,
 		},
 		{
 			title: 'Cache fixPatch message + abbreviate diff',

@@ -36,6 +36,7 @@ interface CoreEntry {
 	batchSize: number
 	outputTokens: number
 	cost: number
+	summarizerCost: number
 	userChars: number
 	assistantChars: number
 	systemChars: number
@@ -88,17 +89,19 @@ function buildCoreEntries(turns: Turn[]): CoreEntry[] {
 
 		{
 			const chars = computeTurnChars(t)
+			const overhead = pendingOverhead.splice(0)
 			entries.push({
 				turn: t,
 				originalIndex: i,
 				batchSize: 1,
 				outputTokens: t.outputTokens,
 				cost: t.cost,
+				summarizerCost: overhead.filter(o => o.phase === 'summarizer').reduce((s, o) => s + o.cost, 0),
 				...chars,
 				charDelta: 0,
 				phaseTurn: 0,
 				phaseTotal: 0,
-				overheadBefore: pendingOverhead.splice(0),
+				overheadBefore: overhead,
 			})
 			i++
 		}
@@ -145,6 +148,7 @@ function fmtCost(n: number): string {
 	return `$${n.toFixed(4)}`
 }
 
+const TOOL_COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16']
 const MIN_PX_PER_TURN = 8
 const FIT_WIDTH = 700
 
@@ -155,6 +159,33 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 	const svgRef = useRef<SVGSVGElement>(null)
 	const scrollRef = useRef<HTMLDivElement>(null)
 	const didAutoScroll = useRef(false)
+
+	const toolIndex = useMemo(() => {
+		const counts = new Map<string, number>()
+		for (const e of entries) {
+			for (const block of e.turn.response as Msg[]) {
+				if (block.type === 'tool_use' && block.name) counts.set(block.name, (counts.get(block.name) ?? 0) + 1)
+			}
+		}
+		return [...counts.entries()].sort((a, b) => b[1] - a[1])
+	}, [entries])
+
+	const entryTools = useMemo(() =>
+		entries.map(e => {
+			const names: string[] = []
+			for (const block of e.turn.response as Msg[]) {
+				if (block.type === 'tool_use' && block.name && !names.includes(block.name)) names.push(block.name)
+			}
+			return names
+		}),
+		[entries]
+	)
+
+	const toolColorMap = useMemo(() => {
+		const map = new Map<string, string>()
+		toolIndex.forEach(([name], i) => map.set(name, TOOL_COLORS[i % TOOL_COLORS.length]))
+		return map
+	}, [toolIndex])
 
 	const n = entries.length
 	const needsScroll = n > 100 && !zoomedOut
@@ -173,7 +204,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 	const maxRoleChars = Math.max(...entries.map(e => e.systemChars + e.userChars + e.assistantChars), 1)
 	const maxOutputTokens = Math.max(...entries.map(e => e.outputTokens), 1)
-	const maxCost = Math.max(...entries.map(e => e.cost), 0.0001)
+	const maxCost = Math.max(...entries.map(e => Math.max(e.cost, e.summarizerCost)), 0.0001)
 	const maxDelta = Math.max(...entries.map(e => Math.abs(e.charDelta)), 1)
 
 	const chartW = needsScroll ? PAD_L + PAD_R + n * MIN_PX_PER_TURN : FIT_WIDTH
@@ -181,7 +212,8 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 	const lineH = compact ? 100 : LINE_H
 	const barH = compact ? 50 : BAR_H
 	const gap = compact ? 20 : GAP
-	const totalH = lineH + gap + barH + PAD_T + PAD_B
+	const toolH = compact ? 0 : 70
+	const totalH = lineH + gap + barH + toolH + PAD_T + PAD_B
 	const plotW = chartW - PAD_L - PAD_R
 
 	function x(i: number) { return PAD_L + (i / (n - 1)) * plotW }
@@ -191,6 +223,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 	const barTop = PAD_T + lineH + gap
 	const barMid = barTop + barH / 2
+	const toolTop = barTop + barH + 6
 
 	function polyline(vals: number[], yFn: (v: number) => number): string {
 		return vals.map((v, i) => `${x(i).toFixed(1)},${yFn(v).toFixed(1)}`).join(' ')
@@ -244,6 +277,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 	const outputLine = polyline(entries.map(e => e.outputTokens), yOut)
 	const costLine = polyline(entries.map(e => e.cost), yCost)
+	const hasSummarizerCost = entries.some(e => e.summarizerCost > 0)
 
 	const barW = Math.max(4, Math.min(24, plotW / n * 0.6))
 
@@ -327,6 +361,17 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 				<polyline points={outputLine} fill="none" stroke="#f59e0b" strokeWidth={compact ? 1.2 : 2} strokeLinejoin="round" />
 				<polyline points={costLine} fill="none" stroke="#a855f7" strokeWidth={compact ? 1 : 1.5} strokeDasharray="4 3" strokeLinejoin="round" />
 
+				{hasSummarizerCost && entries.map((e, i) => {
+					if (e.summarizerCost === 0) return null
+					return (
+						<g key={`sc-${i}`}>
+							<line x1={x(i)} x2={x(i)} y1={yCost(e.summarizerCost)} y2={PAD_T + lineH}
+								stroke="#f472b6" strokeWidth={compact ? 1.5 : 2.5} opacity={0.6} />
+							<circle cx={x(i)} cy={yCost(e.summarizerCost)} r={hover === i ? (compact ? 3 : 4) : (compact ? 1.5 : 2.5)} fill="#f472b6" />
+						</g>
+					)
+				})}
+
 				{entries.map((e, i) => (
 					<g key={`pts-${i}`}>
 						<circle cx={x(i)} cy={yOut(e.outputTokens)} r={hover === i ? (compact ? 3 : 4) : (compact ? 1.5 : 2.5)} fill="#f59e0b" />
@@ -373,30 +418,107 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 				<text x={PAD_L - 6} y={barMid + 3} textAnchor="end" fill="#737373" fontSize={8} fontFamily="monospace">0</text>
 				<text x={PAD_L - 6} y={barTop + barH + 2} textAnchor="end" fill="#737373" fontSize={8} fontFamily="monospace">−{fmt(maxDelta)}</text>
 
+				{/* Tool labels per turn */}
+				{!compact && entries.map((_, i) => {
+					const tools = entryTools[i]
+					if (tools.length === 0) return null
+					return tools.map((name, j) => {
+						const color = toolColorMap.get(name) ?? '#737373'
+						const tx = x(i) + (j - (tools.length - 1) / 2) * 5
+						return (
+							<text key={`tool-${i}-${j}`} x={0} y={0} fontSize={6} fill={color} fontFamily="monospace"
+								transform={`translate(${tx.toFixed(1)}, ${toolTop}) rotate(90)`}
+								dominantBaseline="central"
+							>
+								{name}
+							</text>
+						)
+					})
+				})}
+
 				{hover !== null && (() => {
 					const e = entries[hover]
-					const tx = Math.min(x(hover) + 8, chartW - 190)
-					const ohLabel = e.overheadBefore.length > 0
-						? ` (${e.overheadBefore.map(o => `${o.phase}×${o.count}`).join(', ')} before)`
-						: ''
+					const tools = entryTools[hover]
+					const hasDelta = hover > 0 && e.charDelta !== 0
+					const hasSum = e.summarizerCost > 0
+					const hasOh = e.overheadBefore.length > 0
+					const hasCache = e.turn.cacheReadTokens > 0 || e.turn.cacheWrite5mTokens > 0 || e.turn.cacheWrite1hTokens > 0
+
+					const rows: { label: string; value: string; color: string; x2?: { value: string; color: string } }[] = []
+
+					rows.push({ label: 'In', value: `${fmt(e.turn.inputTokens)} tok`, color: '#e5e5e5' })
+					if (hasCache) {
+						if (e.turn.cacheReadTokens > 0) rows.push({ label: '  cached', value: fmt(e.turn.cacheReadTokens), color: '#c084fc' })
+						if (e.turn.cacheWrite5mTokens > 0) rows.push({ label: '  write-5m', value: fmt(e.turn.cacheWrite5mTokens), color: '#c084fc' })
+						if (e.turn.cacheWrite1hTokens > 0) rows.push({ label: '  write-1h', value: fmt(e.turn.cacheWrite1hTokens), color: '#c084fc' })
+					}
+					rows.push({ label: 'Out', value: `${fmt(e.outputTokens)} tok`, color: '#f59e0b' })
+
+					rows.push({ label: '', value: '', color: 'transparent' })
+
+					rows.push({ label: 'Asst', value: `${fmt(e.assistantChars)} ch`, color: '#fbbf24' })
+					rows.push({ label: 'User', value: `${fmt(e.userChars)} ch`, color: '#60a5fa' })
+					rows.push({ label: 'Sys', value: `${fmt(e.systemChars)} ch`, color: '#c084fc' })
+
+					rows.push({ label: '', value: '', color: 'transparent' })
+
+					rows.push({
+						label: 'Cost',
+						value: fmtCost(e.cost),
+						color: '#a855f7',
+						...(hasSum ? { x2: { value: `sum ${fmtCost(e.summarizerCost)}`, color: '#f472b6' } } : {}),
+					})
+					if (hasDelta) {
+						rows.push({
+							label: 'Δ ctx',
+							value: `${e.charDelta > 0 ? '+' : ''}${fmt(e.charDelta)}`,
+							color: e.charDelta < 0 ? '#22c55e' : '#ef4444',
+						})
+					}
+
+					const tooltipW = 200
+					const lineSpacing = 12
+					const headerH = hasOh ? 32 : 18
+					const toolH = tools.length > 0 ? 14 : 0
+					const tooltipH = headerH + rows.length * lineSpacing + toolH + 8
+					const tx = Math.min(x(hover) + 8, chartW - tooltipW - 4)
+
 					return (
 						<g>
 							<line x1={x(hover)} x2={x(hover)} y1={PAD_T} y2={barTop + barH} stroke="#555" strokeWidth={0.5} strokeDasharray="2 2" />
-							<rect x={tx} y={PAD_T} width={180} height={100} rx={4} fill="#1a1a1a" stroke="#333" strokeWidth={0.5} />
-							<text x={tx + 6} y={PAD_T + 14} fill="#e5e5e5" fontSize={10} fontWeight="600">
+							<rect x={tx} y={PAD_T} width={tooltipW} height={tooltipH} rx={4} fill="#1a1a1a" stroke="#333" strokeWidth={0.5} />
+							<text x={tx + 6} y={PAD_T + 13} fill="#e5e5e5" fontSize={10} fontWeight="600">
 								{e.batchSize > 1
 									? `Batch ×${e.batchSize} · ${e.turn.phase}`
 									: `Turn ${hover + 1} · ${e.turn.phase} ${e.phaseTurn}/${e.phaseTotal}`}
 							</text>
-							{ohLabel && <text x={tx + 6} y={PAD_T + 25} fill="#737373" fontSize={8}>{ohLabel}</text>}
-							<text x={tx + 6} y={PAD_T + 38} fill="#fbbf24" fontSize={9} fontFamily="monospace">Asst: {fmt(e.assistantChars)} ch</text>
-							<text x={tx + 6} y={PAD_T + 50} fill="#60a5fa" fontSize={9} fontFamily="monospace">User: {fmt(e.userChars)} ch</text>
-							<text x={tx + 6} y={PAD_T + 62} fill="#c084fc" fontSize={9} fontFamily="monospace">Sys: {fmt(e.systemChars)} ch</text>
-							<text x={tx + 6} y={PAD_T + 74} fill="#f59e0b" fontSize={9} fontFamily="monospace">Out: {fmt(e.outputTokens)} tok</text>
-							<text x={tx + 6} y={PAD_T + 86} fill="#a855f7" fontSize={9} fontFamily="monospace">Cost: {fmtCost(e.cost)}</text>
-							{hover > 0 && e.charDelta !== 0 && (
-								<text x={tx + 80} y={PAD_T + 86} fill={e.charDelta <= 0 ? '#ef4444' : '#22c55e'} fontSize={9} fontFamily="monospace">
-									Δ: {e.charDelta > 0 ? '+' : ''}{fmt(e.charDelta)}
+							{hasOh && (
+								<text x={tx + 6} y={PAD_T + 25} fill="#737373" fontSize={8}>
+									{e.overheadBefore.map(o => `${o.phase}×${o.count}`).join(', ')} before
+								</text>
+							)}
+
+							{rows.map((r, ri) => (
+								<g key={`tr-${ri}`}>
+									{r.label && (
+										<>
+											<text x={tx + 6} y={PAD_T + headerH + ri * lineSpacing} fill="#737373" fontSize={8} fontFamily="monospace">{r.label}</text>
+											<text x={tx + 58} y={PAD_T + headerH + ri * lineSpacing} fill={r.color} fontSize={9} fontFamily="monospace">{r.value}</text>
+										</>
+									)}
+									{r.x2 && (
+										<text x={tx + 120} y={PAD_T + headerH + ri * lineSpacing} fill={r.x2.color} fontSize={8} fontFamily="monospace">{r.x2.value}</text>
+									)}
+								</g>
+							))}
+
+							{tools.length > 0 && (
+								<text x={tx + 6} y={PAD_T + headerH + rows.length * lineSpacing + 4} fontSize={7} fontFamily="monospace">
+									{tools.map((t, ti) => (
+										<tspan key={ti} fill={toolColorMap.get(t) ?? '#737373'}>
+											{ti > 0 ? ' · ' : ''}{t}
+										</tspan>
+									))}
 								</text>
 							)}
 						</g>
@@ -412,6 +534,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#c084fc', opacity: 0.45 }} /> System</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5" style={{ backgroundColor: '#f59e0b' }} /> Output tokens</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5 border-t border-dashed" style={{ borderColor: '#a855f7' }} /> Cost</span>
+					{hasSummarizerCost && <span className="flex items-center gap-1"><span className="inline-block w-1 h-2.5 rounded-sm" style={{ backgroundColor: '#f472b6', opacity: 0.6 }} /> Summarizer cost</span>}
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} /> Chars grew</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} /> Chars reduced</span>
 				</div>
@@ -430,6 +553,18 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					))}
 				</div>
 			</div>
+
+			{toolIndex.length > 0 && (
+				<div className="mt-1 flex items-center gap-2 flex-wrap">
+					<span className="text-[10px] text-(--text-dim) font-semibold mr-1">Tools</span>
+					{toolIndex.map(([name, count]) => (
+						<span key={name} className="flex items-center gap-1 text-[9px] font-mono text-(--text-dim)">
+							<span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: toolColorMap.get(name) }} />
+							{name} <span className="opacity-50">×{count}</span>
+						</span>
+					))}
+				</div>
+			)}
 		</div>
 	)
 }
