@@ -612,6 +612,10 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 		variant === 'changed' ? 'border-(--accent-dim)' :
 		'border-(--border)'
 
+	const hasCacheControl = Array.isArray(message.content)
+		? (message.content as MessageBlock[]).some(b => !!b.cache_control)
+		: false
+
 	const roleColors: Record<string, string> = {
 		user: 'text-(--blue)',
 		assistant: 'text-(--warn)',
@@ -630,6 +634,9 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 					)}
 					{variant === 'new' && (
 						<span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e3a5f] text-(--blue)">new</span>
+					)}
+					{hasCacheControl && (
+						<span className="text-[10px] px-1.5 py-0.5 rounded bg-[#2d1f4e] text-[#c084fc]">cached</span>
 					)}
 				</div>
 				<div className="flex items-center gap-1.5 text-xs text-(--text-dim)">

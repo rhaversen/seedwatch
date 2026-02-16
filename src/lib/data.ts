@@ -599,10 +599,11 @@ export async function getStatistics(): Promise<Statistics> {
 			const first = cycleTurns.find(t => t.phase === phase)
 			if (!first) continue
 			const sys = (first.system ?? []) as AnyMsg[]
+			const lastCachedIdx = sys.findLastIndex((b: AnyMsg) => typeof b === 'object' && 'cache_control' in b && !!b.cache_control)
 			const blocks = sys.map((b, bi) => ({
 				index: bi,
 				chars: systemBlockLen(b),
-				cached: !!b.cache_control,
+				cached: bi <= lastCachedIdx,
 				preview: (typeof b === 'string' ? b : b.text ?? '').slice(0, 120),
 			}))
 			systemPromptBreakdowns.push({
