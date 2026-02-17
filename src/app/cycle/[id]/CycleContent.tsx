@@ -1,13 +1,342 @@
 'use client'
 
-import { useMemo, useState, useRef, useCallback, useEffect, Fragment } from 'react'
+import { useMemo, useRef, useCallback, useEffect, useState, Fragment } from 'react'
 import { CycleStats } from './CycleStats'
-import { TurnViewer } from './TurnViewer'
-import { BatchViewer } from './BatchViewer'
 import { CycleSearch } from './CycleSearch'
 import { SmartContent } from './SmartContent'
 import type { GeneratedTurn as Turn } from '@/lib/data'
 import { OVERHEAD_PHASES, phaseColors, phaseIcons } from '@/lib/phases'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SystemBlock = Record<string, any>
+
+function systemToString(blocks: unknown[]): string {
+	return (blocks as SystemBlock[]).map(b => (typeof b === 'string' ? b : b.text ?? JSON.stringify(b, null, 2))).join('\n')
+}
+
+type FileRegion = { path: string; lines: Set<number> }
+
+function parseWorkingContext(systemPrompt: string): Map<string, FileRegion> {
+	const regions = new Map<string, FileRegion>()
+
+	const wcMatch = systemPrompt.match(/## Working Context.*?\n([\s\S]*?)(?=\n##|$)/i)
+	if (!wcMatch) return regions
+
+	const wcText = wcMatch[1]
+	const fileBlocks = wcText.split(/\n--- /).slice(1)
+
+	for (const block of fileBlocks) {
+		const headerMatch = block.match(/^(.+?) \(\d+ lines\) ---/)
+		if (!headerMatch) continue
+
+		const path = headerMatch[1]
+		const lines = new Set<number>()
+
+		const lineMatches = block.matchAll(/^(\d+) \|/gm)
+		for (const m of lineMatches) {
+			lines.add(parseInt(m[1], 10))
+		}
+
+		if (lines.size > 0) {
+			regions.set(path, { path, lines })
+		}
+	}
+
+	return regions
+}
+
+interface ReadOverlap {
+	path: string
+	requestedStart: number
+	requestedEnd: number
+	overlappingLines: number[]
+	totalRequested: number
+}
+
+interface EvictedRead {
+	path: string
+	evictedLines: number[]
+	totalRequested: number
+}
+
+function findMatchingRegion(filePath: string, context: Map<string, FileRegion>): FileRegion | undefined {
+	const normalizedPath = filePath.replace(/\\/g, '/')
+	for (const [path, region] of context) {
+		const normalizedRegionPath = path.replace(/\\/g, '/')
+		if (normalizedPath.endsWith(normalizedRegionPath) || normalizedRegionPath.endsWith(normalizedPath) || normalizedPath === normalizedRegionPath) {
+			return region
+		}
+	}
+	return undefined
+}
+
+function analyzeReadOverlap(
+	readInput: { filePath?: string; startLine?: number; endLine?: number },
+	context: Map<string, FileRegion>
+): ReadOverlap | null {
+	const filePath = readInput.filePath
+	if (!filePath) return null
+
+	const fileRegion = findMatchingRegion(filePath, context)
+	if (!fileRegion || fileRegion.lines.size === 0) return null
+
+	const start = readInput.startLine ?? 1
+	const end = readInput.endLine ?? start + 100
+
+	const overlapping: number[] = []
+	for (let line = start; line <= end; line++) {
+		if (fileRegion.lines.has(line)) {
+			overlapping.push(line)
+		}
+	}
+
+	if (overlapping.length === 0) return null
+
+	return {
+		path: filePath,
+		requestedStart: start,
+		requestedEnd: end,
+		overlappingLines: overlapping,
+		totalRequested: end - start + 1,
+	}
+}
+
+function analyzeEvictedRead(
+	readInput: { filePath?: string; startLine?: number; endLine?: number },
+	currentContext: Map<string, FileRegion>,
+	historyContexts: Map<string, FileRegion>[]
+): EvictedRead | null {
+	const filePath = readInput.filePath
+	if (!filePath) return null
+
+	const start = readInput.startLine ?? 1
+	const end = readInput.endLine ?? start + 100
+
+	const currentRegion = findMatchingRegion(filePath, currentContext)
+	const currentLines = currentRegion?.lines ?? new Set<number>()
+
+	const evicted: number[] = []
+	for (let line = start; line <= end; line++) {
+		if (currentLines.has(line)) continue
+
+		for (const hist of historyContexts) {
+			const histRegion = findMatchingRegion(filePath, hist)
+			if (histRegion?.lines.has(line)) {
+				evicted.push(line)
+				break
+			}
+		}
+	}
+
+	if (evicted.length === 0) return null
+
+	return {
+		path: filePath,
+		evictedLines: evicted,
+		totalRequested: end - start + 1,
+	}
+}
+
+type DiffRow =
+	| { type: 'same'; left: string; right: string }
+	| { type: 'changed'; left: string; right: string }
+	| { type: 'removed'; left: string }
+	| { type: 'added'; right: string }
+	| { type: 'collapse'; count: number }
+
+function computeDiffRows(prev: string[], curr: string[]): DiffRow[] {
+	const MAX = 800
+	const pClamped = prev.length > MAX ? prev.slice(0, MAX) : prev
+	const cClamped = curr.length > MAX ? curr.slice(0, MAX) : curr
+	const pn = pClamped.length, cm = cClamped.length
+
+	const dp: number[][] = Array.from({ length: pn + 1 }, () => new Array(cm + 1).fill(0))
+	for (let i = 1; i <= pn; i++) {
+		for (let j = 1; j <= cm; j++) {
+			dp[i][j] = pClamped[i - 1] === cClamped[j - 1]
+				? dp[i - 1][j - 1] + 1
+				: Math.max(dp[i - 1][j], dp[i][j - 1])
+		}
+	}
+
+	const matches: [number, number][] = []
+	let i = pn, j = cm
+	while (i > 0 && j > 0) {
+		if (pClamped[i - 1] === cClamped[j - 1]) {
+			matches.push([i - 1, j - 1])
+			i--; j--
+		} else if (dp[i - 1][j] >= dp[i][j - 1]) {
+			i--
+		} else {
+			j--
+		}
+	}
+	matches.reverse()
+
+	const rows: DiffRow[] = []
+	let pi = 0, ci = 0
+
+	const emitHunk = (removals: string[], additions: string[]) => {
+		const len = Math.max(removals.length, additions.length)
+		for (let k = 0; k < len; k++) {
+			if (k < removals.length && k < additions.length) {
+				rows.push({ type: 'changed', left: removals[k], right: additions[k] })
+			} else if (k < removals.length) {
+				rows.push({ type: 'removed', left: removals[k] })
+			} else {
+				rows.push({ type: 'added', right: additions[k] })
+			}
+		}
+	}
+
+	for (const [mi, mj] of matches) {
+		emitHunk(pClamped.slice(pi, mi), cClamped.slice(ci, mj))
+		rows.push({ type: 'same', left: pClamped[mi], right: cClamped[mj] })
+		pi = mi + 1
+		ci = mj + 1
+	}
+	emitHunk(pClamped.slice(pi), cClamped.slice(ci))
+
+	return rows
+}
+
+function InlineSystemPrompt({ curr, prev, isPhaseStart }: { curr: string; prev: string | null; isPhaseStart: boolean }) {
+	const [expanded, setExpanded] = useState(false)
+	const [mode, setMode] = useState<'diff' | 'raw'>('diff')
+
+	const changed = prev !== null && curr !== prev && !isPhaseStart
+	const delta = prev !== null && !isPhaseStart ? curr.length - prev.length : 0
+
+	const rows = useMemo(() => {
+		if (!changed || !prev) return []
+		return computeDiffRows(prev.split('\n'), curr.split('\n'))
+	}, [changed, prev, curr])
+
+	const display = useMemo(() => {
+		if (rows.length === 0) return []
+		const out: DiffRow[] = []
+		let sameRun: DiffRow[] = []
+		const flush = () => {
+			if (sameRun.length <= 6) out.push(...sameRun)
+			else {
+				out.push(sameRun[0], sameRun[1], sameRun[2])
+				out.push({ type: 'collapse', count: sameRun.length - 6 })
+				out.push(sameRun[sameRun.length - 3], sameRun[sameRun.length - 2], sameRun[sameRun.length - 1])
+			}
+			sameRun = []
+		}
+		for (const row of rows) {
+			if (row.type === 'same') sameRun.push(row)
+			else { flush(); out.push(row) }
+		}
+		flush()
+		return out
+	}, [rows])
+
+	const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+
+	const downloadText = (text: string, filename: string) => {
+		const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+		const url = URL.createObjectURL(blob)
+		const a = document.createElement('a')
+		a.href = url
+		a.download = filename
+		a.click()
+		URL.revokeObjectURL(url)
+	}
+
+	return (
+		<div className="mb-3 border border-(--border) rounded-lg overflow-hidden bg-(--bg-card)/50">
+			<button
+				onClick={() => setExpanded(e => !e)}
+				className="w-full flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-(--bg-hover) transition-colors"
+			>
+				<span className="text-purple-400 font-medium">System</span>
+				<span className="text-(--text-dim) font-mono">{fmt(curr.length)} chars</span>
+				{isPhaseStart && (
+					<span className="px-1.5 py-0.5 rounded-full bg-blue-900/40 text-blue-300 text-[10px]">phase start</span>
+				)}
+				{changed && (
+					<span className={`px-1.5 py-0.5 rounded-full text-[10px] ${delta < 0 ? 'bg-green-900/40 text-green-300' : delta > 0 ? 'bg-red-900/30 text-red-300' : 'bg-purple-900/40 text-purple-300'}`}>
+						{delta > 0 ? '+' : ''}{fmt(delta)}
+					</span>
+				)}
+				{!changed && !isPhaseStart && prev !== null && (
+					<span className="text-(--text-dim) text-[10px]">unchanged</span>
+				)}
+				<span className="ml-auto text-(--text-dim)">{expanded ? '▼' : '▶'}</span>
+			</button>
+
+			{expanded && (
+				<div className="border-t border-(--border)">
+					<div className="flex justify-between items-center gap-1 p-1 border-b border-(--border)">
+						<button
+							onClick={() => downloadText(curr, 'system-prompt.txt')}
+							className="px-2 py-0.5 text-[10px] rounded text-(--text-dim) hover:bg-(--bg-hover)"
+						>
+							📥 Download
+						</button>
+						{changed && (
+							<div className="flex gap-1">
+								<button onClick={() => setMode('diff')}
+									className={`px-2 py-0.5 text-[10px] rounded ${mode === 'diff' ? 'bg-(--accent-dim) text-(--accent)' : 'text-(--text-dim) hover:bg-(--bg-hover)'}`}>
+									Diff
+								</button>
+								<button onClick={() => setMode('raw')}
+									className={`px-2 py-0.5 text-[10px] rounded ${mode === 'raw' ? 'bg-(--accent-dim) text-(--accent)' : 'text-(--text-dim) hover:bg-(--bg-hover)'}`}>
+									Raw
+								</button>
+							</div>
+						)}
+					</div>
+					<div className="p-2 max-h-[32rem] overflow-y-auto">
+						{mode === 'diff' && changed && display.length > 0 ? (
+							<div className="text-xs font-mono grid grid-cols-2">
+								{display.map((row, i) => {
+									const cell = 'px-2 py-px whitespace-pre-wrap wrap-break-word min-h-[1.25rem]'
+									if (row.type === 'collapse') {
+										return <div key={i} className="col-span-2 text-(--text-dim) py-0.5 text-center text-[10px]">⋯ {row.count} unchanged ⋯</div>
+									}
+									if (row.type === 'same') {
+										return <div key={i} className={`col-span-2 ${cell} text-(--text-dim)`}>{row.left || ' '}</div>
+									}
+									if (row.type === 'changed') {
+										return (
+											<Fragment key={i}>
+												<div className={`${cell} bg-red-900/30 text-red-400 border-r border-(--border)`}>{row.left || ' '}</div>
+												<div className={`${cell} bg-green-900/30 text-green-300`}>{row.right || ' '}</div>
+											</Fragment>
+										)
+									}
+									if (row.type === 'removed') {
+										return (
+											<Fragment key={i}>
+												<div className={`${cell} bg-red-900/30 text-red-400 border-r border-(--border)`}>{row.left || ' '}</div>
+												<div className={cell}> </div>
+											</Fragment>
+										)
+									}
+									return (
+										<Fragment key={i}>
+											<div className={`${cell} border-r border-(--border)`}> </div>
+											<div className={`${cell} bg-green-900/30 text-green-300`}>{row.right || ' '}</div>
+										</Fragment>
+									)
+								})}
+							</div>
+						) : (
+							<textarea
+								readOnly
+								value={curr}
+								className="w-full h-[28rem] text-xs text-(--text-dim) font-mono bg-transparent border-none resize-none outline-none"
+							/>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
+	)
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type MessageBlock = Record<string, any>
@@ -22,7 +351,6 @@ interface FlowEntry {
 	turn: Turn
 	overallIndex: number
 	prevCoreTurn: Turn | null
-	prevOverallIndex: number
 	overheadBefore: OverheadGroup[]
 	phaseStart: boolean
 	isFixStart: boolean
@@ -48,7 +376,6 @@ function isFixPhaseStart(turn: Turn): boolean {
 function buildFlow(turns: Turn[]): FlowEntry[] {
 	const entries: FlowEntry[] = []
 	let prevCore: Turn | null = null
-	let prevCoreIdx = -1
 	let prevPhase: string | null = null
 	let pendingOverhead: OverheadGroup[] = []
 
@@ -69,13 +396,11 @@ function buildFlow(turns: Turn[]): FlowEntry[] {
 				turn,
 				overallIndex: idx,
 				prevCoreTurn: prevCore,
-				prevOverallIndex: prevCoreIdx,
 				overheadBefore: pendingOverhead.splice(0),
 				phaseStart,
 				isFixStart: isFix,
 			})
 			prevCore = turn
-			prevCoreIdx = idx
 			prevPhase = turn.phase
 		}
 	}
@@ -210,13 +535,82 @@ function OverheadInline({ group }: { group: OverheadGroup }) {
 				<span className="ml-auto opacity-40">{expanded ? '▼' : '▶'}</span>
 			</button>
 			{expanded && (
-				<div className="mt-2">
-					{group.phase === 'summarizer' ? (
-						<BatchViewer turns={group.turns} />
-					) : (
-						<TurnViewer turns={group.turns} overallStartIndex={group.overallStartIndex} />
-					)}
+				<div className="mt-2 space-y-1">
+					{group.turns.map((t, i) => {
+						const resp = (t.response as MessageBlock[])
+						const text = resp.map(b => b.type === 'text' ? b.text : JSON.stringify(b)).join('\n')
+						return (
+							<pre key={i} className="text-xs font-mono text-(--text-dim) whitespace-pre-wrap wrap-break-word max-h-40 overflow-y-auto">
+								{text.slice(0, 2000)}{text.length > 2000 ? '\n…' : ''}
+							</pre>
+						)
+					})}
 				</div>
+			)}
+		</div>
+	)
+}
+
+function ExpandableText({ text, label, previewLen = 400 }: { text: string; label?: string; previewLen?: number }) {
+	const [expanded, setExpanded] = useState(false)
+	const needsExpand = text.length > previewLen
+
+	const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+
+	const downloadText = (content: string, filename: string) => {
+		const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+		const url = URL.createObjectURL(blob)
+		const a = document.createElement('a')
+		a.href = url
+		a.download = filename
+		a.click()
+		URL.revokeObjectURL(url)
+	}
+
+	if (!needsExpand) {
+		return (
+			<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
+				{text}
+			</pre>
+		)
+	}
+
+	return (
+		<div>
+			{!expanded ? (
+				<>
+					<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
+						{text.slice(0, previewLen)}…
+					</pre>
+					<button
+						onClick={() => setExpanded(true)}
+						className="text-[10px] text-(--accent) hover:underline mt-1"
+					>
+						Show all ({fmt(text.length)} chars)
+					</button>
+				</>
+			) : (
+				<>
+					<div className="flex justify-end gap-2 mb-1">
+						<button
+							onClick={() => downloadText(text, `${label ?? 'content'}.txt`)}
+							className="text-[10px] text-(--text-dim) hover:text-(--text)"
+						>
+							📥 Download
+						</button>
+						<button
+							onClick={() => setExpanded(false)}
+							className="text-[10px] text-(--text-dim) hover:text-(--text)"
+						>
+							Collapse
+						</button>
+					</div>
+					<textarea
+						readOnly
+						value={text}
+						className="w-full h-64 text-xs text-(--text-dim) font-mono bg-transparent border border-(--border) rounded resize-y outline-none p-2"
+					/>
+				</>
 			)}
 		</div>
 	)
@@ -228,15 +622,13 @@ function UserMsgCompact({ msg }: { msg: MessageBlock }) {
 		return (
 			<div className="rounded border border-[#1e3a5f] px-3 py-2 mb-1">
 				<div className="text-[10px] font-semibold text-(--blue) mb-0.5">{msg.role ?? 'user'}</div>
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-40 overflow-y-auto">
-					{content.slice(0, 500)}{content.length > 500 ? '…' : ''}
-				</pre>
+				<ExpandableText text={content} label="user-message" />
 			</div>
 		)
 	}
 	if (Array.isArray(content)) {
 		return (
-			<div className="rounded border border-[#1e3a5f] px-3 py-2 mb-1 space-y-1">
+			<div className="rounded border border-[#1e3a5f] px-3 py-2 mb-1 space-y-2">
 				<div className="text-[10px] font-semibold text-(--blue) mb-0.5">{msg.role ?? 'user'}</div>
 				{(content as MessageBlock[]).map((block, i) => {
 					if (block.type === 'tool_result') {
@@ -245,17 +637,17 @@ function UserMsgCompact({ msg }: { msg: MessageBlock }) {
 							<div key={i} className="text-xs font-mono text-(--text-dim)">
 								<span className="text-[10px] text-(--blue) opacity-60">result</span>
 								<span className="opacity-30 ml-1">{block.tool_use_id?.slice(-8)}</span>
-								<pre className="whitespace-pre-wrap wrap-break-word mt-0.5 max-h-32 overflow-y-auto">
-									{text.slice(0, 400)}{text.length > 400 ? '…' : ''}
-								</pre>
+								<div className="mt-0.5">
+									<ExpandableText text={text} label={`tool-result-${block.tool_use_id?.slice(-8)}`} />
+								</div>
 							</div>
 						)
 					}
 					if (block.type === 'text' && block.text) {
 						return (
-							<pre key={i} className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)">
-								{(block.text as string).slice(0, 400)}{(block.text as string).length > 400 ? '…' : ''}
-							</pre>
+							<div key={i}>
+								<ExpandableText text={block.text as string} label="text-block" />
+							</div>
 						)
 					}
 					return null
@@ -266,7 +658,42 @@ function UserMsgCompact({ msg }: { msg: MessageBlock }) {
 	return null
 }
 
-function ResponseCompact({ block }: { block: MessageBlock }) {
+function ResponseCompact({ block, contextRegions, historyContexts }: { block: MessageBlock; contextRegions?: Map<string, FileRegion>; historyContexts?: Map<string, FileRegion>[] }) {
+	const [thinkingExpanded, setThinkingExpanded] = useState(false)
+
+	if (block.type === 'thinking') {
+		const thinkingText = block.thinking ?? ''
+		const preview = thinkingText.slice(0, 200)
+		const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+
+		return (
+			<div className="rounded border border-purple-800/50 bg-purple-950/20 px-3 py-2 mb-1">
+				<button
+					onClick={() => setThinkingExpanded(e => !e)}
+					className="w-full flex items-center gap-2 text-xs text-left"
+				>
+					<span className="text-purple-400 font-medium">💭 thinking</span>
+					<span className="text-(--text-dim) font-mono text-[10px]">{fmt(thinkingText.length)} chars</span>
+					<span className="ml-auto text-(--text-dim)">{thinkingExpanded ? '▼' : '▶'}</span>
+				</button>
+				{!thinkingExpanded && thinkingText.length > 0 && (
+					<div className="mt-1 text-xs text-(--text-dim) font-mono line-clamp-2 opacity-60">
+						{preview}{thinkingText.length > 200 ? '…' : ''}
+					</div>
+				)}
+				{thinkingExpanded && (
+					<div className="mt-2 border-t border-purple-800/30 pt-2">
+						<textarea
+							readOnly
+							value={thinkingText}
+							className="w-full h-64 text-xs text-purple-300/80 font-mono bg-transparent border-none resize-y outline-none"
+						/>
+					</div>
+				)}
+			</div>
+		)
+	}
+
 	if (block.type === 'text') {
 		return (
 			<div className="rounded border border-(--border) px-3 py-2 mb-1">
@@ -276,11 +703,39 @@ function ResponseCompact({ block }: { block: MessageBlock }) {
 	}
 	if (block.type === 'tool_use') {
 		const inputStr = typeof block.input === 'object' ? JSON.stringify(block.input) : String(block.input ?? '')
+
+		let overlapInfo: ReadOverlap | null = null
+		let evictedInfo: EvictedRead | null = null
+		if (block.name === 'read_file' && contextRegions && typeof block.input === 'object') {
+			const readInput = block.input as { filePath?: string; startLine?: number; endLine?: number }
+			overlapInfo = analyzeReadOverlap(readInput, contextRegions)
+			if (historyContexts && historyContexts.length > 0) {
+				evictedInfo = analyzeEvictedRead(readInput, contextRegions, historyContexts)
+			}
+		}
+
+		const overlapPct = overlapInfo ? Math.round((overlapInfo.overlappingLines.length / overlapInfo.totalRequested) * 100) : 0
+		const isFullyRedundant = overlapPct >= 80
+		const isPartiallyRedundant = overlapPct >= 20 && overlapPct < 80
+		const hasEvicted = evictedInfo && evictedInfo.evictedLines.length > 0
+
 		return (
-			<div className="rounded border border-[#2d3a20] px-3 py-2 mb-1">
-				<div className="flex items-center gap-2 text-xs">
+			<div className={`rounded border px-3 py-2 mb-1 ${isFullyRedundant ? 'border-red-700/60 bg-red-950/20' : isPartiallyRedundant ? 'border-yellow-700/50 bg-yellow-950/10' : hasEvicted ? 'border-orange-700/50 bg-orange-950/10' : 'border-[#2d3a20]'}`}>
+				<div className="flex items-center gap-2 text-xs flex-wrap">
 					<span className="font-semibold text-(--accent)">🔧 {block.name}</span>
 					<span className="text-(--text-dim) font-mono truncate text-[10px]">{inputStr.slice(0, 120)}{inputStr.length > 120 ? '…' : ''}</span>
+					<span className="ml-auto flex gap-1">
+						{overlapInfo && (
+							<span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${isFullyRedundant ? 'bg-red-900/50 text-red-300' : isPartiallyRedundant ? 'bg-yellow-900/40 text-yellow-300' : 'bg-blue-900/30 text-blue-300'}`}>
+								{overlapInfo.overlappingLines.length}/{overlapInfo.totalRequested} in ctx
+							</span>
+						)}
+						{evictedInfo && evictedInfo.evictedLines.length > 0 && (
+							<span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-orange-900/50 text-orange-300" title="These lines were previously in context but got evicted">
+								{evictedInfo.evictedLines.length} evicted
+							</span>
+						)}
+					</span>
 				</div>
 			</div>
 		)
@@ -288,16 +743,20 @@ function ResponseCompact({ block }: { block: MessageBlock }) {
 	return null
 }
 
-function TurnCard({ entry, expanded, onToggle, innerRef }: {
+function TurnCard({ entry, innerRef, historyContexts }: {
 	entry: FlowEntry
-	expanded: boolean
-	onToggle: () => void
 	innerRef: (el: HTMLElement | null) => void
+	historyContexts: Map<string, FileRegion>[]
 }) {
-	const { turn, prevCoreTurn, overallIndex } = entry
+	const { turn, prevCoreTurn, overallIndex, phaseStart } = entry
 	const msgs = turn.messages as MessageBlock[]
 	const prevMsgs = prevCoreTurn ? prevCoreTurn.messages as MessageBlock[] : []
 	const response = turn.response as MessageBlock[]
+
+	const currSystem = systemToString(turn.system as unknown[])
+	const prevSystem = prevCoreTurn ? systemToString(prevCoreTurn.system as unknown[]) : null
+
+	const contextRegions = useMemo(() => parseWorkingContext(currSystem), [currSystem])
 
 	const newMsgs = prevCoreTurn === null
 		? msgs
@@ -310,13 +769,20 @@ function TurnCard({ entry, expanded, onToggle, innerRef }: {
 		}
 	}
 
-	const overheadMarkers = entry.overheadBefore.map(oh => ({
-		phase: oh.phase,
-		turns: oh.turns,
-		overallStartIndex: oh.overallStartIndex,
-		isBatch: oh.phase === 'summarizer',
-		afterLocalIndex: 0,
-	}))
+	const redundantReads = useMemo(() => {
+		let totalRedundant = 0
+		let totalReads = 0
+		for (const block of response) {
+			if (block.type === 'tool_use' && block.name === 'read_file' && typeof block.input === 'object') {
+				totalReads++
+				const overlap = analyzeReadOverlap(block.input as { filePath?: string; startLine?: number; endLine?: number }, contextRegions)
+				if (overlap && overlap.overlappingLines.length / overlap.totalRequested >= 0.5) {
+					totalRedundant++
+				}
+			}
+		}
+		return { totalRedundant, totalReads }
+	}, [response, contextRegions])
 
 	return (
 		<div ref={innerRef}>
@@ -333,9 +799,16 @@ function TurnCard({ entry, expanded, onToggle, innerRef }: {
 							{compressedCount} compressed
 						</span>
 					)}
+					{redundantReads.totalRedundant > 0 && (
+						<span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300">
+							{redundantReads.totalRedundant}/{redundantReads.totalReads} re-reads
+						</span>
+					)}
 				</div>
 				<div className="h-px flex-1" style={{ backgroundColor: phaseColors[turn.phase] ?? '#444', opacity: 0.3 }} />
 			</div>
+
+			<InlineSystemPrompt curr={currSystem} prev={prevSystem} isPhaseStart={phaseStart} />
 
 			{newMsgs.length > 0 && (
 				<div className="mb-2">
@@ -344,40 +817,27 @@ function TurnCard({ entry, expanded, onToggle, innerRef }: {
 			)}
 
 			<div className="ml-4 border-l-2 pl-3 space-y-1" style={{ borderColor: phaseColors[turn.phase] ?? '#fbbf24' }}>
-				{response.map((block, i) => <ResponseCompact key={i} block={block} />)}
+				{response.map((block, i) => <ResponseCompact key={i} block={block} contextRegions={contextRegions} historyContexts={historyContexts} />)}
 			</div>
-
-			<div className="mt-2 flex justify-end">
-				<button
-					onClick={onToggle}
-					className="text-[10px] text-(--text-dim) hover:text-(--text) transition-colors px-2 py-0.5 rounded hover:bg-(--bg-hover)"
-				>
-					{expanded ? '▲ Hide full context' : '▼ View full context'}
-				</button>
-			</div>
-
-			{expanded && (
-				<div className="mt-2 border border-(--border) rounded-lg p-4 bg-(--bg-card)">
-					<TurnViewer
-						turns={prevCoreTurn ? [prevCoreTurn, turn] : [turn]}
-						overallStartIndex={prevCoreTurn ? entry.prevOverallIndex : overallIndex}
-						overallIndices={prevCoreTurn ? [entry.prevOverallIndex, overallIndex] : [overallIndex]}
-						selectedTurn={overallIndex}
-						selectionKey={1}
-						overheadMarkers={overheadMarkers}
-					/>
-				</div>
-			)}
 		</div>
 	)
 }
 
 export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTurn?: number }) {
-	const [expandedTurn, setExpandedTurn] = useState<number | null>(null)
 	const turnRefs = useRef<Map<number, HTMLElement>>(new Map())
 
 	const flow = useMemo(() => buildFlow(turns), [turns])
 	const phaseRuns = useMemo(() => computePhaseRuns(flow), [flow])
+
+	const systemContextHistory = useMemo(() => {
+		const history: Map<string, FileRegion>[] = []
+		for (const entry of flow) {
+			const systemStr = systemToString(entry.turn.system as unknown[])
+			const regions = parseWorkingContext(systemStr)
+			history.push(regions)
+		}
+		return history
+	}, [flow])
 
 	useEffect(() => {
 		if (initialTurn === undefined) return
@@ -411,7 +871,7 @@ export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTur
 			<CycleSearch turns={turns} onNavigate={handleTurnClick} />
 			<CycleStats turns={turns} onTurnClick={handleTurnClick} />
 
-			<div className="flex justify-end mb-3">
+			<div className="flex justify-end gap-2 mb-3">
 				<button
 					onClick={handleDownload}
 					className="text-xs text-(--text-dim) hover:text-(--text) transition-colors px-3 py-1.5 rounded border border-(--border) hover:bg-(--bg-hover)"
@@ -441,12 +901,11 @@ export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTur
 
 						<TurnCard
 							entry={entry}
-							expanded={expandedTurn === entry.overallIndex}
-							onToggle={() => setExpandedTurn(expandedTurn === entry.overallIndex ? null : entry.overallIndex)}
 							innerRef={el => {
 								if (el) turnRefs.current.set(entry.overallIndex, el)
 								else turnRefs.current.delete(entry.overallIndex)
 							}}
+							historyContexts={systemContextHistory.slice(0, i)}
 						/>
 					</Fragment>
 				))}

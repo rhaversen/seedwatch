@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useRef, useCallback, useEffect, Fragment } from 'react'
+import { useState, useRef, useCallback, useEffect, Fragment } from 'react'
 import type { GeneratedTurn as Turn } from '@/lib/data'
 import { phaseColors, phaseIcons } from '@/lib/phases'
 import { SmartContent } from './SmartContent'
@@ -20,70 +20,7 @@ interface OverheadMarker {
 	phase: string
 	turns: Turn[]
 	overallStartIndex: number
-	isBatch: boolean
 	afterLocalIndex: number
-}
-
-interface SummarizerInfo {
-	toolName: string
-	inputHint: string
-	originalChars: number
-	result: 'kept' | 'summarized' | 'error'
-	keepLines: string | null
-	reasoning: string | null
-	toolCall: MessageBlock | null
-}
-
-function buildSummarizerMap(overheadMarkers: OverheadMarker[]): Map<string, SummarizerInfo> {
-	const map = new Map<string, SummarizerInfo>()
-	for (const marker of overheadMarkers) {
-		if (marker.phase !== 'summarizer') continue
-		for (const turn of marker.turns) {
-			const messages = turn.messages as MessageBlock[]
-			const response = turn.response as MessageBlock[]
-			const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-			const userText = typeof lastUserMsg?.content === 'string'
-				? lastUserMsg.content
-				: Array.isArray(lastUserMsg?.content)
-					? lastUserMsg.content.map((b: MessageBlock) => b.text ?? '').join('')
-					: ''
-
-			const idMatch = userText.match(/tool_use_id="([^"]+)"/)
-			const toolUseId = idMatch?.[1]
-			if (!toolUseId) continue
-
-			const hintMatch = userText.match(/\(([^)]+)\)/)
-			const hint = hintMatch?.[1] ?? ''
-			const toolName = hint.split(/[,:]/)[0]?.trim() ?? 'unknown'
-			const inputHint = hint.split(/[:,]/).slice(1).join(',').trim()
-			const charsMatch = userText.match(/(\d[\d,]*)\s*chars?\)/)
-			const originalChars = charsMatch ? parseInt(charsMatch[1].replace(/,/g, '')) : 0
-
-			let result: 'kept' | 'summarized' | 'error' = 'error'
-			let keepLines: string | null = null
-			let toolCall: MessageBlock | null = null
-			const reasoningParts: string[] = []
-
-			for (const block of response) {
-				if (block.type === 'text') reasoningParts.push(block.text)
-				if (block.type !== 'tool_use') continue
-				toolCall = block
-				if (block.name === 'keep') {
-					result = 'kept'
-				} else if (block.name === 'summarize_lines' || block.name === 'summarize') {
-					result = 'summarized'
-					keepLines = block.input?.keep_lines ?? null
-				}
-			}
-
-			map.set(toolUseId, {
-				toolName, inputHint, originalChars, result, keepLines,
-				reasoning: reasoningParts.length > 0 ? reasoningParts.join('\n') : null,
-				toolCall,
-			})
-		}
-	}
-	return map
 }
 
 export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selectedTurn, selectionKey = 0, overheadMarkers = [] }: { turns: Turn[]; overallStartIndex?: number; overallIndices?: number[]; selectedTurn?: number; selectionKey?: number; overheadMarkers?: OverheadMarker[] }) {
@@ -191,9 +128,6 @@ export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selec
 	const changedCount = classified.filter(c => c.status === 'changed').length
 	const newCount = classified.filter(c => c.status === 'new').length
 
-	const summarizerMap = useMemo(() => buildSummarizerMap(overheadMarkers), [overheadMarkers])
-	const nonSummarizerMarkers = useMemo(() => overheadMarkers.filter(m => m.phase !== 'summarizer'), [overheadMarkers])
-
 	return (
 		<div ref={containerRef} className="relative" tabIndex={0}>
 			{/* Header bar */}
@@ -273,7 +207,6 @@ export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selec
 											prevMessage={cm.prevMsg}
 											muted={cm.status === 'unchanged'}
 											variant={cm.status}
-											summarizerMap={summarizerMap}
 										/>
 									</div>
 								</div>
@@ -290,14 +223,13 @@ export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selec
 					</div>
 			</div>
 
-			{/* Inline overhead markers (non-summarizer only — summarizer is shown inline on messages) */}
-			{nonSummarizerMarkers
+			{overheadMarkers
 				.filter(m => m.afterLocalIndex <= currentTurn)
 				.map((marker, mi) => (
 					<InlineOverhead key={`oh-past-${mi}`} marker={marker} />
 				))
 			}
-			{nonSummarizerMarkers
+			{overheadMarkers
 				.filter(m => m.afterLocalIndex > currentTurn)
 				.map((marker, mi) => (
 					<InlineOverhead key={`oh-stack-${mi}`} marker={marker} />
@@ -309,9 +241,6 @@ export function TurnViewer({ turns, overallStartIndex = 0, overallIndices, selec
 
 /* ── Inline overhead marker ──────────────────────────────────────── */
 
-const ohPhaseColors = phaseColors
-const ohPhaseIcons = phaseIcons
-
 function InlineOverhead({ marker }: { marker: OverheadMarker }) {
 	const [expanded, setExpanded] = useState(false)
 	const totalCost = marker.turns.reduce((s, t) => s + t.cost, 0)
@@ -320,19 +249,17 @@ function InlineOverhead({ marker }: { marker: OverheadMarker }) {
 	return (
 		<div
 			className="my-2 border-l-2 pl-3 py-1 rounded-r"
-			style={{ borderColor: ohPhaseColors[marker.phase] ?? '#737373', backgroundColor: 'rgba(255,255,255,0.02)' }}
+			style={{ borderColor: phaseColors[marker.phase] ?? '#737373', backgroundColor: 'rgba(255,255,255,0.02)' }}
 		>
 			<button
 				onClick={() => setExpanded(!expanded)}
 				className="flex items-center gap-2 text-sm text-(--text-dim) hover:text-(--text) transition-colors w-full"
 			>
-				<span>{ohPhaseIcons[marker.phase] ?? '⚙️'}</span>
+				<span>{phaseIcons[marker.phase] ?? '⚙️'}</span>
 				<span className="capitalize font-medium">{marker.phase}</span>
-				{(marker.isBatch || marker.turns.length > 1) && (
+				{marker.turns.length > 1 && (
 					<span className="text-xs opacity-60">
-						{marker.isBatch
-							? `batch of ${marker.turns.length}`
-							: `${marker.turns.length} turns`}
+						{`${marker.turns.length} turns`}
 					</span>
 				)}
 				<span className="text-xs opacity-60 font-mono">{costStr}</span>
@@ -340,15 +267,7 @@ function InlineOverhead({ marker }: { marker: OverheadMarker }) {
 			</button>
 			{expanded && (
 				<div className="mt-2">
-					{marker.isBatch ? (
-						<pre className="text-xs font-mono text-(--text-dim) whitespace-pre-wrap wrap-break-word max-h-60 overflow-y-auto">
-							{marker.turns.map(t =>
-								(t.response as MessageBlock[]).map(b => b.type === 'text' ? b.text : JSON.stringify(b)).join('\n')
-							).join('\n---\n')}
-						</pre>
-					) : (
-						<TurnViewer turns={marker.turns} overallStartIndex={marker.overallStartIndex} />
-					)}
+					<TurnViewer turns={marker.turns} overallStartIndex={marker.overallStartIndex} />
 				</div>
 			)}
 		</div>
@@ -576,12 +495,11 @@ function DiffView({ prev, curr }: { prev: string; curr: string }) {
 
 /* ── Message bubbles ────────────────────────────────────────────── */
 
-function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: {
+function MessageBubble({ message, prevMessage, muted, variant }: {
 	message: MessageBlock
 	prevMessage?: MessageBlock | null
 	muted?: boolean
 	variant?: MessageStatus
-	summarizerMap?: Map<string, SummarizerInfo>
 }) {
 	const [expanded, setExpanded] = useState(false)
 	const [showAll, setShowAll] = useState(false)
@@ -598,21 +516,6 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 		: diff < 0
 			? `+${Math.abs(diff).toLocaleString('en-US')} chars`
 			: 'modified'
-
-	const annotatedIds = new Set<string>()
-	if (variant === 'changed' && prevMessage && Array.isArray(message.content) && summarizerMap) {
-		const prevBlocks = Array.isArray(prevMessage.content) ? prevMessage.content as MessageBlock[] : []
-		for (const b of message.content as MessageBlock[]) {
-			if (b.type !== 'tool_result' || !b.tool_use_id) continue
-			if (!summarizerMap.has(b.tool_use_id)) continue
-			const prevBlock = prevBlocks.find((pb: MessageBlock) => pb.type === 'tool_result' && pb.tool_use_id === b.tool_use_id)
-			if (!prevBlock) continue
-			if (JSON.stringify(prevBlock.content) !== JSON.stringify(b.content)) {
-				annotatedIds.add(b.tool_use_id)
-			}
-		}
-	}
-	const hasAnnotations = annotatedIds.size > 0
 
 	const borderClass =
 		variant === 'new' ? 'border-[#1e3a5f]' :
@@ -655,16 +558,7 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 				</div>
 			</div>
 
-			{hasAnnotations ? (
-				<ContentBlocksWithAnnotations
-					blocks={message.content as MessageBlock[]}
-					summarizerMap={summarizerMap!}
-					annotatedIds={annotatedIds}
-					expanded={expanded}
-					hasDiff={!!hasDiff}
-					prevMessage={prevMessage!}
-				/>
-			) : expanded ? (
+			{expanded ? (
 				hasDiff ? (
 					<DiffView prev={prevContent} curr={content} />
 				) : (
@@ -688,151 +582,6 @@ function MessageBubble({ message, prevMessage, muted, variant, summarizerMap }: 
 				<pre className={`text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim)`}>
 					{preview}{isLong ? '…' : ''}
 				</pre>
-			)}
-		</div>
-	)
-}
-
-function ContentBlocksWithAnnotations({ blocks, summarizerMap, annotatedIds, expanded, hasDiff, prevMessage }: {
-	blocks: MessageBlock[]
-	summarizerMap: Map<string, SummarizerInfo>
-	annotatedIds: Set<string>
-	expanded: boolean
-	hasDiff: boolean
-	prevMessage: MessageBlock
-}) {
-	const prevBlocks = Array.isArray(prevMessage.content) ? prevMessage.content as MessageBlock[] : []
-
-	return (
-		<div className="space-y-1">
-			{blocks.map((block, i) => {
-				if (block.type === 'tool_result' && block.tool_use_id) {
-					const info = summarizerMap.get(block.tool_use_id)
-					const isAnnotated = annotatedIds.has(block.tool_use_id)
-					const blockText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
-					const prevBlock = prevBlocks.find((pb: MessageBlock) => pb.type === 'tool_result' && pb.tool_use_id === block.tool_use_id)
-					const prevText = prevBlock ? (typeof prevBlock.content === 'string' ? prevBlock.content : JSON.stringify(prevBlock.content)) : ''
-					const contentChanged = prevText && prevText !== blockText
-
-					return (
-						<div key={i}>
-							<ToolResultBlock
-								toolUseId={block.tool_use_id}
-								content={blockText}
-								prevContent={contentChanged ? prevText : undefined}
-								expanded={expanded}
-								hasDiff={hasDiff && !!contentChanged}
-							/>
-							{isAnnotated && info && (
-								<SummarizerAnnotation info={info} />
-							)}
-						</div>
-					)
-				}
-
-				const text = block.type === 'text' ? block.text ?? ''
-					: block.type === 'tool_use' ? `[tool_use: ${block.name}]${block.input ? ' ' + JSON.stringify(block.input) : ''}`
-					: JSON.stringify(block)
-				if (!text) return null
-
-				return (
-					<div key={i} className={expanded ? '' : 'line-clamp-2'}>
-						<SmartContent text={expanded ? text : text.slice(0, 200) + (text.length > 200 ? '…' : '')} className="text-(--text-dim)" maxHeight={expanded ? '32rem' : 'none'} />
-					</div>
-				)
-			})}
-		</div>
-	)
-}
-
-function ToolResultBlock({ toolUseId, content, prevContent, expanded, hasDiff }: {
-	toolUseId: string
-	content: string
-	prevContent?: string
-	expanded: boolean
-	hasDiff: boolean
-}) {
-	const idSuffix = toolUseId.slice(-8)
-	const preview = content.slice(0, 120)
-	const isLong = content.length > 120
-
-	return (
-		<div className="rounded border border-(--border) px-2 py-1">
-			<div className="flex items-center gap-2 text-[10px] text-(--text-dim) mb-0.5">
-				<span className="font-mono opacity-60">{idSuffix}</span>
-				<span>{content.length.toLocaleString('en-US')} chars</span>
-				{hasDiff && prevContent && (
-					<span className="text-(--accent)">{prevContent.length > content.length
-						? `−${(prevContent.length - content.length).toLocaleString('en-US')}`
-						: `+${(content.length - prevContent.length).toLocaleString('en-US')}`
-					} chars</span>
-				)}
-			</div>
-			{expanded ? (
-				hasDiff && prevContent ? (
-					<DiffView prev={prevContent} curr={content} />
-				) : (
-					<SmartContent text={content.slice(0, 6000) + (content.length > 6000 ? '\n…(truncated)' : '')} className="text-(--text-dim)" maxHeight="10rem" />
-				)
-			) : (
-				<pre className="text-xs whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) line-clamp-2">
-					{preview}{isLong ? '…' : ''}
-				</pre>
-			)}
-		</div>
-	)
-}
-
-function SummarizerAnnotation({ info }: { info: SummarizerInfo }) {
-	const [expanded, setExpanded] = useState(false)
-
-	return (
-		<div className={`rounded overflow-hidden ${
-			info.result === 'summarized'
-				? 'bg-pink-950/30'
-				: info.result === 'kept'
-					? 'bg-emerald-950/30'
-					: 'bg-yellow-950/30'
-		}`}>
-			<button
-				onClick={() => setExpanded(!expanded)}
-				className={`flex items-center gap-2 text-[10px] px-2 py-1 w-full text-left hover:brightness-125 transition-all ${
-					info.result === 'summarized'
-						? 'text-pink-300'
-						: info.result === 'kept'
-							? 'text-emerald-400'
-							: 'text-yellow-400'
-				}`}
-			>
-				<span>{info.result === 'summarized' ? '📦' : info.result === 'kept' ? '✓' : '⚠'}</span>
-				<span className="font-mono font-medium">{info.toolName}</span>
-				{info.inputHint && <span className="opacity-70 truncate">{info.inputHint}</span>}
-				<span className="opacity-70">{info.originalChars.toLocaleString('en-US')} chars</span>
-				{info.result === 'summarized' && info.keepLines && (
-					<span className="opacity-70">→ lines {info.keepLines}</span>
-				)}
-				<span className="ml-auto opacity-40">{expanded ? '▾' : '▸'}</span>
-			</button>
-
-			{expanded && (
-				<div className="px-2 pb-2 space-y-1.5">
-					{info.reasoning && (
-						<div className="border border-(--border) rounded p-2">
-							<div className="text-[9px] font-semibold text-pink-400 mb-0.5">Reasoning</div>
-							<pre className="text-[10px] whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-40 overflow-y-auto">
-								{info.reasoning}
-							</pre>
-						</div>
-					)}
-					{info.toolCall && (
-						<div className="border border-pink-900/50 rounded p-2">
-							<div className="text-[9px] font-semibold text-pink-300 mb-0.5">🔧 {info.toolCall.name}</div>
-							<pre className="text-[10px] whitespace-pre-wrap wrap-break-word font-mono text-(--text-dim) max-h-40 overflow-y-auto">
-								{typeof info.toolCall.input === 'object' ? JSON.stringify(info.toolCall.input, null, 2) : String(info.toolCall.input)}
-							</pre>
-						</div>
-					)}
-				</div>
 			)}
 		</div>
 	)

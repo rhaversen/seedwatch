@@ -1,5 +1,5 @@
 import { getStatistics } from '@/lib/data'
-import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, SummarizerBatchDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand, CostVelocity } from '@/lib/data'
+import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand, CostVelocity } from '@/lib/data'
 import DownloadButton from './DownloadButton'
 import { phaseColors } from '@/lib/phases'
 
@@ -67,7 +67,6 @@ export default async function StatisticsPage() {
 			<BuildVsFixProductivity productivity={stats.phaseProductivity} />
 			<CostEfficiencyCurve bands={stats.costEfficiencyBands} />
 			<MemoryOverhead details={stats.memoryCallDetails} totalCost={stats.totalCost} />
-			<SummarizerOverhead details={stats.summarizerBatchDetails} totalCost={stats.totalCost} />
 			<OptimizationOpportunities stats={stats} />
 		</div>
 	)
@@ -79,7 +78,6 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 	const fixCostPct = fixProd ? (fixProd.totalCost / stats.totalCost) * 100 : 0
 	const fixCostMultiplier = fixProd && buildProd && buildProd.costPerOutputToken > 0
 		? fixProd.costPerOutputToken / buildProd.costPerOutputToken : 0
-	const totalReReads = stats.repeatedFileReads.length
 	const uncachedBuilder = stats.systemPromptBreakdowns.find(b => b.phase === 'builder')
 	const uncachedChars = uncachedBuilder?.blocks.filter(b => !b.cached).reduce((s, b) => s + b.chars, 0) ?? 0
 	const uncachedTokens = Math.round(uncachedChars / 4)
@@ -102,15 +100,6 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 			icon: String(findings.length + 1),
 			label: 'Uncached system prompt',
 			detail: `${fmt(uncachedTokens)} tokens of builder system prompt are sent uncached every turn. Caching saves ~${fmtCost(cacheSavingsPerCycle)}/cycle.`,
-			color: 'var(--warn)',
-		})
-	}
-
-	if (totalReReads > 0) {
-		findings.push({
-			icon: String(findings.length + 1),
-			label: 'Compression causes re-reads',
-			detail: `${totalReReads} file re-reads caused by summarizer compressing earlier results of overlapping line ranges.`,
 			color: 'var(--warn)',
 		})
 	}
@@ -387,7 +376,7 @@ function CycleComparison({ overviews }: { overviews: CycleOverview[] }) {
 								<span className="font-mono text-xs">{fmtCost(c.totalCost)}</span>
 							</div>
 							<div className="relative h-5 rounded-full overflow-hidden bg-(--bg-hover)">
-								{(['planner', 'builder', 'memory', 'reflect', 'summarizer'] as const).reduce<{ elements: React.ReactNode[]; offset: number }>((acc, phase) => {
+								{(['planner', 'builder', 'memory', 'reflect'] as const).reduce<{ elements: React.ReactNode[]; offset: number }>((acc, phase) => {
 									const phaseCost = c.phaseCosts[phase] ?? 0
 									const w = (phaseCost / maxCost) * 100
 									if (w > 0.2) {
@@ -415,7 +404,6 @@ function CycleComparison({ overviews }: { overviews: CycleOverview[] }) {
 								<span>{c.builderTurns} builder turns</span>
 								<span>{c.plannerTurns} planner turns</span>
 								<span>{c.memoryTurns} memory calls</span>
-								{c.summarizerBatches > 0 && <span>{c.summarizerBatches} summarizer batches</span>}
 							</div>
 						</div>
 					)
@@ -1278,11 +1266,10 @@ function RepeatedFileReads({ reads }: { reads: RepeatedFileRead[] }) {
 
 	return (
 		<section className="border border-(--border) rounded-lg p-5">
-			<h2 className="text-lg font-semibold mb-2">Compression-Caused Re-reads</h2>
+			<h2 className="text-lg font-semibold mb-2">Repeated File Reads</h2>
 			<p className="text-xs text-(--text-dim) mb-4">
-				File reads where an earlier read of overlapping lines was compressed by the summarizer,
-				causing the agent to re-read the same content. Only counted when a summarizer batch ran between
-				the original read and the re-read, and the line ranges overlap.
+				File reads where overlapping line ranges were read multiple times during a cycle,
+				causing redundant context to be loaded.
 			</p>
 
 			<div className="grid grid-cols-3 gap-4 mb-4">
@@ -1337,9 +1324,8 @@ function RepeatedFileReads({ reads }: { reads: RepeatedFileRead[] }) {
 
 			{reads.length > 0 && (
 				<div className="mt-4 p-3 bg-(--bg-hover) rounded-lg text-xs text-(--text-dim)">
-					These re-reads were specifically caused by the summarizer compressing overlapping line ranges.
-					Keeping more lines in the compressed results would prevent {reads.length} re-reads,
-					saving ~{fmt(totalWastedChars * 0.25)} tokens of re-fetched context.
+					{reads.length} repeated file reads detected across overlapping line ranges,
+					accounting for ~{fmt(totalWastedChars * 0.25)} tokens of redundant context.
 				</div>
 			)}
 		</section>
@@ -1436,69 +1422,6 @@ function MemoryOverhead({ details, totalCost }: { details: MemoryCallDetail[]; t
 					Cost of these unnecessary calls: <span className="font-mono text-(--warn)">{fmtCost(shortContentCost)}</span>
 				</div>
 			)}
-		</section>
-	)
-}
-
-function SummarizerOverhead({ details, totalCost }: { details: SummarizerBatchDetail[]; totalCost: number }) {
-	if (details.length === 0) return null
-
-	const totalBatches = details.length
-	const totalEntries = details.reduce((s, d) => s + d.entriesInBatch, 0)
-	const totalSumCost = details.reduce((s, d) => s + d.totalCost, 0)
-	const totalSumInput = details.reduce((s, d) => s + d.totalInputTokens, 0)
-	const avgEntriesPerBatch = Math.round(totalEntries / totalBatches)
-
-	return (
-		<section className="border border-(--border) rounded-lg p-5">
-			<h2 className="text-lg font-semibold mb-2">Summarizer Batch Overhead</h2>
-			<p className="text-xs text-(--text-dim) mb-4">
-				Each summarizer batch sends N candidate tool results through the Batch API (50% cost discount) to compress conversation context.
-			</p>
-
-			<div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Total Batches</div>
-					<div className="text-lg font-mono font-semibold">{totalBatches}</div>
-					<div className="text-xs text-(--text-dim)">{totalEntries} entries</div>
-				</div>
-				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Total Cost</div>
-					<div className="text-lg font-mono font-semibold">{fmtCost(totalSumCost)}</div>
-					<div className="text-xs text-(--text-dim)">{pct(totalSumCost, totalCost)} of total</div>
-				</div>
-				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Avg Entries/Batch</div>
-					<div className="text-lg font-mono font-semibold">{avgEntriesPerBatch}</div>
-				</div>
-				<div className="border border-(--border) rounded-lg p-3">
-					<div className="text-xs text-(--text-dim)">Total Input</div>
-					<div className="text-lg font-mono font-semibold">{fmt(totalSumInput)} tok</div>
-				</div>
-			</div>
-
-			<table className="w-full text-xs font-mono">
-				<thead>
-					<tr className="text-(--text-dim) border-b border-(--border)">
-						<th className="text-left pb-1 pr-3">Cycle</th>
-						<th className="text-right pb-1 pr-3">Batches</th>
-						<th className="text-right pb-1 pr-3">Entries</th>
-						<th className="text-right pb-1 pr-3">Input Tok</th>
-						<th className="text-right pb-1">Cost</th>
-					</tr>
-				</thead>
-				<tbody>
-					{[...Map.groupBy(details, d => d.cycleIndex).entries()].map(([ci, batches]) => (
-						<tr key={ci} className="border-b border-(--border)/20">
-							<td className="py-1 pr-3 font-sans">{batches[0].cycleTitle}</td>
-							<td className="py-1 pr-3 text-right">{batches.length}</td>
-							<td className="py-1 pr-3 text-right">{batches.reduce((s, b) => s + b.entriesInBatch, 0)}</td>
-							<td className="py-1 pr-3 text-right">{fmt(batches.reduce((s, b) => s + b.totalInputTokens, 0))}</td>
-							<td className="py-1 text-right">{fmtCost(batches.reduce((s, b) => s + b.totalCost, 0))}</td>
-						</tr>
-					))}
-				</tbody>
-			</table>
 		</section>
 	)
 }

@@ -54,7 +54,6 @@ function generateMarkdown(stats: Statistics): string {
 	generateBuildVsFixProductivity(stats, push, blank)
 	generateCostEfficiencyCurve(stats, push, blank)
 	generateMemoryOverhead(stats, push, blank)
-	generateSummarizerOverhead(stats, push, blank)
 	generateOptimizationOpportunities(stats, push, blank)
 
 	return lines.join('\n')
@@ -66,7 +65,6 @@ function generateExecutiveSummary(stats: Statistics, push: (...s: string[]) => v
 	const fixCostPct = fixProd ? (fixProd.totalCost / stats.totalCost) * 100 : 0
 	const fixCostMultiplier = fixProd && buildProd && buildProd.costPerOutputToken > 0
 		? fixProd.costPerOutputToken / buildProd.costPerOutputToken : 0
-	const totalReReads = stats.repeatedFileReads.length
 	const uncachedBuilder = stats.systemPromptBreakdowns.find(b => b.phase === 'builder')
 	const uncachedChars = uncachedBuilder?.blocks.filter(b => !b.cached).reduce((s, b) => s + b.chars, 0) ?? 0
 	const uncachedTokens = Math.round(uncachedChars / 4)
@@ -87,13 +85,6 @@ function generateExecutiveSummary(stats: Statistics, push: (...s: string[]) => v
 			detail: `${fmt(uncachedTokens)} tokens of builder system prompt are sent uncached every turn. Caching saves ~${fmtCost(cacheSavingsPerCycle)}/cycle.`,
 		})
 	}
-	if (totalReReads > 0) {
-		findings.push({
-			label: 'Aggressive compression causes re-reads',
-			detail: `${totalReReads} redundant file reads across cycles because earlier results were fully redacted instead of summarized.`,
-		})
-	}
-
 	if (findings.length === 0) return
 
 	push(`## Key Findings`)
@@ -668,9 +659,9 @@ function generateRepeatedFileReads(stats: Statistics, push: (...s: string[]) => 
 	const totalWastedChars = reads.reduce((s, r) => s + r.reReadChars, 0)
 	const uniqueFiles = new Set(reads.map(r => r.filePath)).size
 
-	push(`## Compression-Caused Re-reads`)
+	push(`## Repeated File Reads`)
 	blank()
-	push(`File re-reads where an earlier read of overlapping lines was compressed by the summarizer.`)
+	push(`File reads where overlapping line ranges were read multiple times during a cycle.`)
 	blank()
 
 	push(mdTable(
@@ -695,7 +686,7 @@ function generateRepeatedFileReads(stats: Statistics, push: (...s: string[]) => 
 	))
 	blank()
 
-	push(`> These re-reads were caused by the summarizer compressing overlapping line ranges. Keeping more lines in compressed results would prevent ${reads.length} re-reads, saving ~${fmt(totalWastedChars * 0.25)} tokens.`)
+	push(`> ${reads.length} repeated file reads detected across overlapping line ranges, accounting for ~${fmt(totalWastedChars * 0.25)} tokens of redundant context.`)
 	blank()
 }
 
@@ -850,46 +841,6 @@ function generateMemoryOverhead(stats: Statistics, push: (...s: string[]) => voi
 	}
 }
 
-function generateSummarizerOverhead(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {
-	const details = stats.summarizerBatchDetails
-	if (details.length === 0) return
-
-	const totalEntries = details.reduce((s, d) => s + d.entriesInBatch, 0)
-	const totalCost = details.reduce((s, d) => s + d.totalCost, 0)
-	const totalInput = details.reduce((s, d) => s + d.totalInputTokens, 0)
-	const avgEntries = Math.round(totalEntries / details.length)
-
-	push(`## Summarizer Batch Overhead`)
-	blank()
-	push(`Each summarizer batch sends N candidate tool results through the Batch API (50% cost discount) to compress conversation context.`)
-	blank()
-
-	push(mdTable(
-		['Metric', 'Value'],
-		[
-			['Total Batches', String(details.length)],
-			['Total Entries', String(totalEntries)],
-			['Total Cost', `${fmtCost(totalCost)} (${pct(totalCost, stats.totalCost)} of total)`],
-			['Avg Entries/Batch', String(avgEntries)],
-			['Total Input', `${fmt(totalInput)} tok`],
-		],
-	))
-	blank()
-
-	const byCycle = Map.groupBy(details, d => d.cycleIndex)
-	push(mdTable(
-		['Cycle', 'Batches', 'Entries', 'Input Tok', 'Cost'],
-		[...byCycle.entries()].map(([, batches]) => [
-			batches[0].cycleTitle,
-			String(batches.length),
-			String(batches.reduce((s, b) => s + b.entriesInBatch, 0)),
-			fmt(batches.reduce((s, b) => s + b.totalInputTokens, 0)),
-			fmtCost(batches.reduce((s, b) => s + b.totalCost, 0)),
-		]),
-	))
-	blank()
-}
-
 function generateOptimizationOpportunities(stats: Statistics, push: (...s: string[]) => void, blank: () => void) {
 	const builderPhase = stats.phaseStats.find(p => p.phase === 'builder')
 	const memoryPhase = stats.phaseStats.find(p => p.phase === 'memory')
@@ -1009,11 +960,11 @@ function generateOptimizationOpportunities(stats: Statistics, push: (...s: strin
 			applicable: shortMemoryCalls > 0,
 		},
 		{
-			title: 'Reduce compression-caused re-reads',
+			title: 'Reduce repeated file reads',
 			savings: totalWastedReReads > 0 ? `~${fmt(Math.round(totalWastedReReadChars / 4))} tok/cycle` : 'N/A',
 			dollarSavings: totalWastedReReads > 0 ? (totalWastedReReadChars / 4 * rate) / 1_000_000 : 0,
 			impact: totalWastedReReads > 0 ? 'MEDIUM' : 'N/A',
-			description: `${totalWastedReReads} re-reads caused by compression totaling ~${fmt(totalWastedReReadChars)} wasted chars. Preserving critical line ranges during summarization would avoid these re-reads.`,
+			description: `${totalWastedReReads} repeated file reads totaling ~${fmt(totalWastedReReadChars)} wasted chars of redundant context.`,
 			applicable: totalWastedReReads > 0,
 		},
 		{

@@ -274,15 +274,6 @@ export interface MemoryCallDetail {
 	summaryChars: number
 }
 
-export interface SummarizerBatchDetail {
-	cycleIndex: number
-	cycleTitle: string
-	entriesInBatch: number
-	totalInputTokens: number
-	totalOutputTokens: number
-	totalCost: number
-}
-
 export interface CycleOverview {
 	index: number
 	title: string
@@ -295,7 +286,6 @@ export interface CycleOverview {
 	builderTurns: number
 	plannerTurns: number
 	memoryTurns: number
-	summarizerBatches: number
 }
 
 export interface FixPhaseSegment {
@@ -393,7 +383,6 @@ export interface Statistics {
 	builderTurnPoints: BuilderTurnPoint[]
 	systemPromptBreakdowns: SystemPromptBreakdown[]
 	memoryCallDetails: MemoryCallDetail[]
-	summarizerBatchDetails: SummarizerBatchDetail[]
 	fixPhaseSegments: FixPhaseSegment[]
 	tokenBuckets: TokenBucket[]
 	toolUsageStats: ToolUsageStat[]
@@ -572,9 +561,8 @@ export async function getStatistics(): Promise<Statistics> {
 	const cycleOverviews: CycleOverview[] = cycles.map((cycleTurns, i) => {
 		const phaseCosts: Record<string, number> = {}
 		const phaseInputTokens: Record<string, number> = {}
-		let builderTurns = 0, plannerTurns = 0, memoryTurns = 0, summarizerBatches = 0
+		let builderTurns = 0, plannerTurns = 0, memoryTurns = 0
 		let tc = 0, ti = 0, to = 0
-		let prevSummarizer = false
 		for (const t of cycleTurns) {
 			phaseCosts[t.phase] = (phaseCosts[t.phase] ?? 0) + t.cost
 			phaseInputTokens[t.phase] = (phaseInputTokens[t.phase] ?? 0) + t.inputTokens
@@ -582,8 +570,6 @@ export async function getStatistics(): Promise<Statistics> {
 			if (t.phase === 'builder') builderTurns++
 			if (t.phase === 'planner') plannerTurns++
 			if (t.phase === 'memory') memoryTurns++
-			if (t.phase === 'summarizer' && !prevSummarizer) summarizerBatches++
-			prevSummarizer = t.phase === 'summarizer'
 		}
 		return {
 			index: i,
@@ -597,7 +583,6 @@ export async function getStatistics(): Promise<Statistics> {
 			builderTurns,
 			plannerTurns,
 			memoryTurns,
-			summarizerBatches,
 		}
 	})
 
@@ -700,32 +685,6 @@ export async function getStatistics(): Promise<Statistics> {
 
 	// Fix-phase segments: groups of builder turns starting at a fixPatch restart
 	const fixPhaseSegments: FixPhaseSegment[] = []
-
-	// Summarizer batch details
-	const summarizerBatchDetails: SummarizerBatchDetail[] = []
-	for (let ci = 0; ci < cycles.length; ci++) {
-		const cycleTurns = cycles[ci]
-		const title = extractPlanTitle(cycleTurns)
-		let i = 0
-		while (i < cycleTurns.length) {
-			if (cycleTurns[i].phase === 'summarizer') {
-				let j = i + 1
-				while (j < cycleTurns.length && cycleTurns[j].phase === 'summarizer') j++
-				const batch = cycleTurns.slice(i, j)
-				summarizerBatchDetails.push({
-					cycleIndex: ci,
-					cycleTitle: title,
-					entriesInBatch: batch.length,
-					totalInputTokens: batch.reduce((s, t) => s + t.inputTokens, 0),
-					totalOutputTokens: batch.reduce((s, t) => s + t.outputTokens, 0),
-					totalCost: batch.reduce((s, t) => s + t.cost, 0),
-				})
-				i = j
-			} else {
-				i++
-			}
-		}
-	}
 
 	for (let ci = 0; ci < cycles.length; ci++) {
 		const pts = builderTurnPoints.filter(p => p.cycleIndex === ci)
@@ -843,117 +802,7 @@ export async function getStatistics(): Promise<Statistics> {
 		makeProductivity('Fix phases', fixPts),
 	]
 
-	// Repeated file reads caused by compression:
-	// Only count a re-read as redundant if an earlier read of overlapping lines was compressed (gap markers injected)
-	// between the two reads, meaning the summarizer removed context the agent later needed again.
-	const GAP_MARKER = '[Lines omitted from context.'
 	const repeatedFileReads: RepeatedFileRead[] = []
-
-	for (let ci = 0; ci < cycles.length; ci++) {
-		const cycleTurns = cycles[ci]
-		const title = extractPlanTitle(cycleTurns)
-
-		interface ReadRecord {
-			toolUseId: string
-			filePath: string
-			startLine: number
-			endLine: number
-			turnIdx: number
-			compressed: boolean
-		}
-
-		const reads: ReadRecord[] = []
-		let lastSummarizerIdx = -1
-
-		for (let ti = 0; ti < cycleTurns.length; ti++) {
-			const t = cycleTurns[ti]
-
-			if (t.phase === 'summarizer') {
-				lastSummarizerIdx = ti
-				// Check which prior reads got compressed by looking at tool_results in the messages
-				// of the NEXT non-summarizer turn
-				continue
-			}
-
-			// Check if any prior reads were compressed in this turn's messages
-			const msgs = (t.messages ?? []) as AnyMsg[]
-			for (const read of reads) {
-				if (read.compressed) continue
-				for (const msg of msgs) {
-					if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
-					for (const block of msg.content) {
-						if (block.type !== 'tool_result' || block.tool_use_id !== read.toolUseId) continue
-						const text = typeof block.content === 'string' ? block.content : ''
-						if (text.includes(GAP_MARKER)) {
-							read.compressed = true
-						}
-					}
-				}
-			}
-
-			if (t.phase !== 'builder' && t.phase !== 'planner') continue
-
-			// Extract new read_file actions from this turn's response
-			const resp = (t.response ?? []) as AnyMsg[]
-			for (const block of resp) {
-				if (block.type !== 'tool_use' || block.name !== 'read_file') continue
-				const fp = block.input?.filePath ?? block.input?.path ?? ''
-				if (!fp) continue
-				const startLine = Number(block.input?.startLine) || 1
-				const endLine = Number(block.input?.endLine) || Infinity
-
-				// Check if this is a re-read of lines that were compressed away from an earlier read
-				for (const prior of reads) {
-					if (prior.filePath !== fp) continue
-					if (!prior.compressed) continue
-					// A summarizer must have run between the original read and this re-read
-					if (lastSummarizerIdx <= prior.turnIdx) continue
-
-					// Check line range overlap
-					const overlapStart = Math.max(prior.startLine, startLine)
-					const overlapEnd = Math.min(prior.endLine, endLine)
-					if (overlapStart > overlapEnd) continue
-
-					// Find the result chars for this re-read from the next turn's messages
-					const nextTurn = cycleTurns[ti + 1]
-					const nextMsgs = nextTurn ? (nextTurn.messages ?? []) as AnyMsg[] : []
-					let reReadChars = 0
-					for (const m of nextMsgs) {
-						if (m.role !== 'user' || !Array.isArray(m.content)) continue
-						for (const b of m.content) {
-							if (b.type === 'tool_result' && b.tool_use_id === block.id) {
-								reReadChars = typeof b.content === 'string' ? b.content.length : 0
-							}
-						}
-					}
-
-					repeatedFileReads.push({
-						cycleIndex: ci,
-						cycleTitle: title,
-						filePath: fp,
-						reReadTurn: ti + 1,
-						originalTurn: prior.turnIdx + 1,
-						reReadChars,
-						originalStartLine: prior.startLine,
-						originalEndLine: prior.endLine === Infinity ? 0 : prior.endLine,
-						reReadStartLine: startLine,
-						reReadEndLine: endLine === Infinity ? 0 : endLine,
-						overlapLines: overlapEnd - overlapStart + 1,
-					})
-				}
-
-				reads.push({
-					toolUseId: block.id,
-					filePath: fp,
-					startLine: startLine,
-					endLine: endLine,
-					turnIdx: ti,
-					compressed: false,
-				})
-			}
-		}
-	}
-	repeatedFileReads.sort((a, b) => a.cycleIndex - b.cycleIndex || a.reReadTurn - b.reReadTurn)
 
 	// Cost efficiency bands: group builder turns by turn-number ranges
 	const bandDefs = [
@@ -1059,7 +908,6 @@ export async function getStatistics(): Promise<Statistics> {
 		builderTurnPoints,
 		systemPromptBreakdowns,
 		memoryCallDetails,
-		summarizerBatchDetails,
 		fixPhaseSegments,
 		tokenBuckets,
 		toolUsageStats,

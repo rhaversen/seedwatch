@@ -27,18 +27,10 @@ function buildCoreEntries(turns: TurnStatRow[]): CoreEntry[] {
 		const t = turns[i]
 
 		if (OVERHEAD_PHASES.has(t.phase)) {
-			if (t.phase === 'summarizer') {
-				let j = i + 1
-				while (j < turns.length && turns[j].phase === 'summarizer') j++
-				const batchCost = turns.slice(i, j).reduce((s, b) => s + b.cost, 0)
-				pendingOverhead.push({ phase: t.phase, count: j - i, cost: batchCost })
-				i = j
-			} else {
-				const last = pendingOverhead[pendingOverhead.length - 1]
-				if (last && last.phase === t.phase) { last.count++; last.cost += t.cost }
-				else pendingOverhead.push({ phase: t.phase, count: 1, cost: t.cost })
-				i++
-			}
+			const last = pendingOverhead[pendingOverhead.length - 1]
+			if (last && last.phase === t.phase) { last.count++; last.cost += t.cost }
+			else pendingOverhead.push({ phase: t.phase, count: 1, cost: t.cost })
+			i++
 			continue
 		}
 
@@ -222,7 +214,7 @@ export function OverallStats({ turns }: { turns: TurnStatRow[] }) {
 		return num
 	}
 
-	const overheadIcons: Record<string, string> = { memory: '🧠', summarizer: '🗜️' }
+	const overheadIcons: Record<string, string> = { memory: '🧠' }
 
 	return (
 		<div className="border border-(--border) rounded-lg p-5 mb-6">
@@ -367,12 +359,10 @@ export function OverallStats({ turns }: { turns: TurnStatRow[] }) {
 							{p}
 						</span>
 					))}
-					{['memory', 'summarizer'].map(p => (
-						<span key={p} className="flex items-center gap-1">
-							<span className="inline-block w-3 h-0.5" style={{ backgroundColor: phaseColors[p] }} />
-							{p}
-						</span>
-					))}
+					<span className="flex items-center gap-1">
+						<span className="inline-block w-3 h-0.5" style={{ backgroundColor: phaseColors.memory }} />
+						memory
+					</span>
 				</div>
 			</div>
 		</div>

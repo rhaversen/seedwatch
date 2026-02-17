@@ -36,7 +36,6 @@ interface CoreEntry {
 	batchSize: number
 	outputTokens: number
 	cost: number
-	summarizerCost: number
 	userChars: number
 	assistantChars: number
 	systemChars: number
@@ -72,18 +71,10 @@ function buildCoreEntries(turns: Turn[]): CoreEntry[] {
 		const t = turns[i]
 
 		if (OVERHEAD_PHASES.has(t.phase)) {
-			if (t.phase === 'summarizer') {
-				let j = i + 1
-				while (j < turns.length && turns[j].phase === 'summarizer') j++
-				const batchCost = turns.slice(i, j).reduce((s, b) => s + b.cost, 0)
-				pendingOverhead.push({ phase: t.phase, count: j - i, cost: batchCost })
-				i = j
-			} else {
-				const last = pendingOverhead[pendingOverhead.length - 1]
-				if (last && last.phase === t.phase) { last.count++; last.cost += t.cost }
-				else pendingOverhead.push({ phase: t.phase, count: 1, cost: t.cost })
-				i++
-			}
+			const last = pendingOverhead[pendingOverhead.length - 1]
+			if (last && last.phase === t.phase) { last.count++; last.cost += t.cost }
+			else pendingOverhead.push({ phase: t.phase, count: 1, cost: t.cost })
+			i++
 			continue
 		}
 
@@ -96,7 +87,6 @@ function buildCoreEntries(turns: Turn[]): CoreEntry[] {
 				batchSize: 1,
 				outputTokens: t.outputTokens,
 				cost: t.cost,
-				summarizerCost: overhead.filter(o => o.phase === 'summarizer').reduce((s, o) => s + o.cost, 0),
 				...chars,
 				charDelta: 0,
 				phaseTurn: 0,
@@ -204,7 +194,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 	const maxRoleChars = Math.max(...entries.map(e => e.systemChars + e.userChars + e.assistantChars), 1)
 	const maxOutputTokens = Math.max(...entries.map(e => e.outputTokens), 1)
-	const maxCost = Math.max(...entries.map(e => Math.max(e.cost, e.summarizerCost)), 0.0001)
+	const maxCost = Math.max(...entries.map(e => e.cost), 0.0001)
 	const maxDelta = Math.max(...entries.map(e => Math.abs(e.charDelta)), 1)
 
 	const chartW = needsScroll ? PAD_L + PAD_R + n * MIN_PX_PER_TURN : FIT_WIDTH
@@ -277,7 +267,6 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 	const outputLine = polyline(entries.map(e => e.outputTokens), yOut)
 	const costLine = polyline(entries.map(e => e.cost), yCost)
-	const hasSummarizerCost = entries.some(e => e.summarizerCost > 0)
 
 	const barW = Math.max(4, Math.min(24, plotW / n * 0.6))
 
@@ -299,7 +288,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 		setHover(closest.i >= 0 ? closest.i : null)
 	}
 
-	const overheadIcons: Record<string, string> = { memory: '🧠', summarizer: '🗜️' }
+	const overheadIcons: Record<string, string> = { memory: '🧠' }
 
 	return (
 		<div className="border border-(--border) rounded-lg p-5 mb-6">
@@ -360,17 +349,6 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 				<polyline points={outputLine} fill="none" stroke="#f59e0b" strokeWidth={compact ? 1.2 : 2} strokeLinejoin="round" />
 				<polyline points={costLine} fill="none" stroke="#a855f7" strokeWidth={compact ? 1 : 1.5} strokeDasharray="4 3" strokeLinejoin="round" />
-
-				{hasSummarizerCost && entries.map((e, i) => {
-					if (e.summarizerCost === 0) return null
-					return (
-						<g key={`sc-${i}`}>
-							<line x1={x(i)} x2={x(i)} y1={yCost(e.summarizerCost)} y2={PAD_T + lineH}
-								stroke="#f472b6" strokeWidth={compact ? 1.5 : 2.5} opacity={0.6} />
-							<circle cx={x(i)} cy={yCost(e.summarizerCost)} r={hover === i ? (compact ? 3 : 4) : (compact ? 1.5 : 2.5)} fill="#f472b6" />
-						</g>
-					)
-				})}
 
 				{entries.map((e, i) => (
 					<g key={`pts-${i}`}>
@@ -440,7 +418,6 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					const e = entries[hover]
 					const tools = entryTools[hover]
 					const hasDelta = hover > 0 && e.charDelta !== 0
-					const hasSum = e.summarizerCost > 0
 					const hasOh = e.overheadBefore.length > 0
 					const hasCache = e.turn.cacheReadTokens > 0 || e.turn.cacheWrite5mTokens > 0 || e.turn.cacheWrite1hTokens > 0
 
@@ -462,12 +439,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 
 					rows.push({ label: '', value: '', color: 'transparent' })
 
-					rows.push({
-						label: 'Cost',
-						value: fmtCost(e.cost),
-						color: '#a855f7',
-						...(hasSum ? { x2: { value: `sum ${fmtCost(e.summarizerCost)}`, color: '#f472b6' } } : {}),
-					})
+					rows.push({ label: 'Cost', value: fmtCost(e.cost), color: '#a855f7' })
 					if (hasDelta) {
 						rows.push({
 							label: 'Δ ctx',
@@ -534,7 +506,6 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#c084fc', opacity: 0.45 }} /> System</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5" style={{ backgroundColor: '#f59e0b' }} /> Output tokens</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5 border-t border-dashed" style={{ borderColor: '#a855f7' }} /> Cost</span>
-					{hasSummarizerCost && <span className="flex items-center gap-1"><span className="inline-block w-1 h-2.5 rounded-sm" style={{ backgroundColor: '#f472b6', opacity: 0.6 }} /> Summarizer cost</span>}
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} /> Chars grew</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} /> Chars reduced</span>
 				</div>
@@ -545,12 +516,10 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 							{p}
 						</span>
 					))}
-					{['memory', 'summarizer'].map(p => (
-						<span key={p} className="flex items-center gap-1">
-							<span className="inline-block w-3 h-0.5" style={{ backgroundColor: phaseColors[p] }} />
-							{p}
-						</span>
-					))}
+					<span className="flex items-center gap-1">
+						<span className="inline-block w-3 h-0.5" style={{ backgroundColor: phaseColors.memory }} />
+						memory
+					</span>
 				</div>
 			</div>
 
