@@ -46,6 +46,8 @@ interface CoreEntry {
 	phaseTurn: number
 	phaseTotal: number
 	overheadBefore: { phase: string; count: number; cost: number }[]
+	thinkingChars: number
+	textChars: number
 }
 
 function computeTurnChars(t: Turn) {
@@ -60,6 +62,21 @@ function computeTurnChars(t: Turn) {
 	}
 	const sysChars = systemLen(t.system)
 	return { userChars, assistantChars, systemChars: sysChars, userMsgs, assistantMsgs, totalChars: userChars + assistantChars + sysChars }
+}
+
+function computeResponseChars(t: Turn) {
+	const response = t.response as Msg[]
+	let thinkingChars = 0, textChars = 0
+	for (const b of response) {
+		if (b.type === 'thinking') {
+			thinkingChars += (b.thinking?.length ?? b.text?.length ?? 0)
+		} else if (b.type === 'text') {
+			textChars += (b.text?.length ?? 0)
+		} else if (b.type === 'tool_use') {
+			textChars += JSON.stringify(b.input ?? '').length
+		}
+	}
+	return { thinkingChars, textChars }
 }
 
 function buildCoreEntries(turns: Turn[]): CoreEntry[] {
@@ -80,6 +97,7 @@ function buildCoreEntries(turns: Turn[]): CoreEntry[] {
 
 		{
 			const chars = computeTurnChars(t)
+			const respChars = computeResponseChars(t)
 			const overhead = pendingOverhead.splice(0)
 			entries.push({
 				turn: t,
@@ -88,6 +106,7 @@ function buildCoreEntries(turns: Turn[]): CoreEntry[] {
 				outputTokens: t.outputTokens,
 				cost: t.cost,
 				...chars,
+				...respChars,
 				charDelta: 0,
 				phaseTurn: 0,
 				phaseTotal: 0,
@@ -193,7 +212,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 	const totalCost = entries.reduce((s, e) => s + e.cost + e.overheadBefore.reduce((a, o) => a + o.cost, 0), 0)
 
 	const maxRoleChars = Math.max(...entries.map(e => e.systemChars + e.userChars + e.assistantChars), 1)
-	const maxOutputTokens = Math.max(...entries.map(e => e.outputTokens), 1)
+	const maxResponseChars = Math.max(...entries.map(e => e.thinkingChars + e.textChars), 1)
 	const maxCost = Math.max(...entries.map(e => e.cost), 0.0001)
 	const maxDelta = Math.max(...entries.map(e => Math.abs(e.charDelta)), 1)
 
@@ -209,7 +228,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 	function x(i: number) { return PAD_L + (i / (n - 1)) * plotW }
 	function yRole(v: number) { return PAD_T + lineH - (v / maxRoleChars) * lineH }
 	function yCost(v: number) { return PAD_T + lineH - (v / maxCost) * lineH }
-	function yOut(v: number) { return PAD_T + lineH - (v / maxOutputTokens) * lineH }
+	function yResp(v: number) { return PAD_T + lineH - (v / maxResponseChars) * lineH }
 
 	const barTop = PAD_T + lineH + gap
 	const barMid = barTop + barH / 2
@@ -265,7 +284,8 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 		subAreas.push({ path: roleAreaPath(top, bot), color: `hsl(43, 96%, ${lum.toFixed(1)}%)`, opacity: 0.35 })
 	}
 
-	const outputLine = polyline(entries.map(e => e.outputTokens), yOut)
+	const textLine = polyline(entries.map(e => e.textChars), yResp)
+	const totalRespLine = polyline(entries.map(e => e.thinkingChars + e.textChars), yResp)
 	const costLine = polyline(entries.map(e => e.cost), yCost)
 
 	const barW = Math.max(4, Math.min(24, plotW / n * 0.6))
@@ -347,12 +367,14 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					<path key={`area-${i}`} d={a.path} fill={a.color} opacity={a.opacity} />
 				))}
 
-				<polyline points={outputLine} fill="none" stroke="#f59e0b" strokeWidth={compact ? 1.2 : 2} strokeLinejoin="round" />
+				<polyline points={totalRespLine} fill="none" stroke="#f59e0b" strokeWidth={compact ? 1.2 : 2} strokeLinejoin="round" />
+				<polyline points={textLine} fill="none" stroke="#22c55e" strokeWidth={compact ? 1 : 1.5} strokeLinejoin="round" />
 				<polyline points={costLine} fill="none" stroke="#a855f7" strokeWidth={compact ? 1 : 1.5} strokeDasharray="4 3" strokeLinejoin="round" />
 
 				{entries.map((e, i) => (
 					<g key={`pts-${i}`}>
-						<circle cx={x(i)} cy={yOut(e.outputTokens)} r={hover === i ? (compact ? 3 : 4) : (compact ? 1.5 : 2.5)} fill="#f59e0b" />
+						<circle cx={x(i)} cy={yResp(e.thinkingChars + e.textChars)} r={hover === i ? (compact ? 3 : 4) : (compact ? 1.5 : 2.5)} fill="#f59e0b" />
+						<circle cx={x(i)} cy={yResp(e.textChars)} r={hover === i ? (compact ? 2.5 : 3.5) : (compact ? 1 : 1.5)} fill="#22c55e" />
 						<circle cx={x(i)} cy={yCost(e.cost)} r={hover === i ? (compact ? 2.5 : 3.5) : (compact ? 1 : 2)} fill="#a855f7" />
 					</g>
 				))}
@@ -429,7 +451,11 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 						if (e.turn.cacheWrite5mTokens > 0) rows.push({ label: '  write-5m', value: fmt(e.turn.cacheWrite5mTokens), color: '#c084fc' })
 						if (e.turn.cacheWrite1hTokens > 0) rows.push({ label: '  write-1h', value: fmt(e.turn.cacheWrite1hTokens), color: '#c084fc' })
 					}
-					rows.push({ label: 'Out', value: `${fmt(e.outputTokens)} tok`, color: '#f59e0b' })
+					rows.push({ label: 'Out', value: `${fmt(e.outputTokens)} tok`, color: '#e5e5e5' })
+					rows.push({ label: '  text', value: `${fmt(e.textChars)} ch`, color: '#22c55e' })
+					if (e.thinkingChars > 0) {
+						rows.push({ label: '  thinking', value: `${fmt(e.thinkingChars)} ch`, color: '#f59e0b' })
+					}
 
 					rows.push({ label: '', value: '', color: 'transparent' })
 
@@ -504,10 +530,11 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#fbbf24', opacity: 0.45 }} /> Assistant</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#60a5fa', opacity: 0.45 }} /> User</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#c084fc', opacity: 0.45 }} /> System</span>
-					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5" style={{ backgroundColor: '#f59e0b' }} /> Output tokens</span>
+					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5" style={{ backgroundColor: '#f59e0b' }} /> Total output</span>
+					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5" style={{ backgroundColor: '#22c55e' }} /> Text output</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5 border-t border-dashed" style={{ borderColor: '#a855f7' }} /> Cost</span>
 					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#ef4444' }} /> Chars grew</span>
-					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} /> Chars reduced</span>
+					<span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e', opacity: 0.5 }} /> Chars reduced</span>
 				</div>
 				<div className="flex gap-3 text-[10px] text-(--text-dim)">
 					{Object.entries(phaseColors).filter(([p]) => !OVERHEAD_PHASES.has(p)).map(([p, c]) => (

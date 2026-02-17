@@ -620,7 +620,7 @@ function UserMsgCompact({ msg }: { msg: MessageBlock }) {
 	const content = msg.content
 	if (typeof content === 'string') {
 		return (
-			<div className="rounded border border-[#1e3a5f] px-3 py-2 mb-1">
+			<div data-message-block className="rounded border border-[#1e3a5f] px-3 py-2 mb-1">
 				<div className="text-[10px] font-semibold text-(--blue) mb-0.5">{msg.role ?? 'user'}</div>
 				<ExpandableText text={content} label="user-message" />
 			</div>
@@ -628,7 +628,7 @@ function UserMsgCompact({ msg }: { msg: MessageBlock }) {
 	}
 	if (Array.isArray(content)) {
 		return (
-			<div className="rounded border border-[#1e3a5f] px-3 py-2 mb-1 space-y-2">
+			<div data-message-block className="rounded border border-[#1e3a5f] px-3 py-2 mb-1 space-y-2">
 				<div className="text-[10px] font-semibold text-(--blue) mb-0.5">{msg.role ?? 'user'}</div>
 				{(content as MessageBlock[]).map((block, i) => {
 					if (block.type === 'tool_result') {
@@ -662,12 +662,13 @@ function ResponseCompact({ block, contextRegions, historyContexts }: { block: Me
 	const [thinkingExpanded, setThinkingExpanded] = useState(false)
 
 	if (block.type === 'thinking') {
-		const thinkingText = block.thinking ?? ''
+		const thinkingText = block.thinking ?? block.text ?? ''
+		if (!thinkingText) return null
 		const preview = thinkingText.slice(0, 200)
 		const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 
 		return (
-			<div className="rounded border border-purple-800/50 bg-purple-950/20 px-3 py-2 mb-1">
+			<div data-thinking-block className="rounded border border-purple-800/50 bg-purple-950/20 px-3 py-2 mb-1">
 				<button
 					onClick={() => setThinkingExpanded(e => !e)}
 					className="w-full flex items-center gap-2 text-xs text-left"
@@ -696,7 +697,7 @@ function ResponseCompact({ block, contextRegions, historyContexts }: { block: Me
 
 	if (block.type === 'text') {
 		return (
-			<div className="rounded border border-(--border) px-3 py-2 mb-1">
+			<div data-message-block className="rounded border border-(--border) px-3 py-2 mb-1">
 				<SmartContent text={block.text ?? ''} maxHeight="20rem" />
 			</div>
 		)
@@ -720,7 +721,7 @@ function ResponseCompact({ block, contextRegions, historyContexts }: { block: Me
 		const hasEvicted = evictedInfo && evictedInfo.evictedLines.length > 0
 
 		return (
-			<div className={`rounded border px-3 py-2 mb-1 ${isFullyRedundant ? 'border-red-700/60 bg-red-950/20' : isPartiallyRedundant ? 'border-yellow-700/50 bg-yellow-950/10' : hasEvicted ? 'border-orange-700/50 bg-orange-950/10' : 'border-[#2d3a20]'}`}>
+			<div data-tool-block className={`rounded border px-3 py-2 mb-1 ${isFullyRedundant ? 'border-red-700/60 bg-red-950/20' : isPartiallyRedundant ? 'border-yellow-700/50 bg-yellow-950/10' : hasEvicted ? 'border-orange-700/50 bg-orange-950/10' : 'border-[#2d3a20]'}`}>
 				<div className="flex items-center gap-2 text-xs flex-wrap">
 					<span className="font-semibold text-(--accent)">🔧 {block.name}</span>
 					<span className="text-(--text-dim) font-mono truncate text-[10px]">{inputStr.slice(0, 120)}{inputStr.length > 120 ? '…' : ''}</span>
@@ -743,6 +744,50 @@ function ResponseCompact({ block, contextRegions, historyContexts }: { block: Me
 	return null
 }
 
+function getMessageSummary(msg: MessageBlock): string {
+	if (msg.role === 'user') {
+		if (typeof msg.content === 'string') return `user: ${msg.content.slice(0, 100)}...`
+		if (Array.isArray(msg.content)) {
+			const first = msg.content[0]
+			if (first?.type === 'tool_result') return `tool_result: ${first.tool_use_id?.slice(-8)}`
+			if (first?.type === 'text') return `user text: ${(first.text as string)?.slice(0, 60)}...`
+			return `user: ${msg.content.length} blocks`
+		}
+	}
+	if (msg.role === 'assistant') {
+		if (Array.isArray(msg.content)) {
+			const tools = (msg.content as MessageBlock[]).filter(b => b.type === 'tool_use')
+			if (tools.length > 0) return `assistant: ${tools.map(t => t.name).join(', ')}`
+			return `assistant: ${(msg.content as MessageBlock[]).length} blocks`
+		}
+	}
+	return `${msg.role ?? 'unknown'}`
+}
+
+function CompressedDetails({ items }: { items: { index: number; prevMsg: MessageBlock; currMsg: MessageBlock }[] }) {
+	return (
+		<div className="mb-3 rounded border border-(--accent)/30 bg-(--accent)/5 px-3 py-2">
+			<div className="text-[10px] font-semibold text-(--accent) mb-2">Compressed Messages</div>
+			<div className="space-y-1.5">
+				{items.map((item, i) => {
+					const prevLen = JSON.stringify(item.prevMsg).length
+					const currLen = JSON.stringify(item.currMsg).length
+					const diff = prevLen - currLen
+					return (
+						<div key={i} className="text-[10px] font-mono">
+							<span className="text-(--text-dim)">#{item.index + 1}</span>
+							<span className="ml-2 text-(--text)">{getMessageSummary(item.prevMsg)}</span>
+							<span className="ml-2 text-(--accent)">
+								{diff > 0 ? `-${(diff / 1000).toFixed(1)}k` : `+${(Math.abs(diff) / 1000).toFixed(1)}k`}
+							</span>
+						</div>
+					)
+				})}
+			</div>
+		</div>
+	)
+}
+
 function TurnCard({ entry, innerRef, historyContexts }: {
 	entry: FlowEntry
 	innerRef: (el: HTMLElement | null) => void
@@ -762,12 +807,18 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 		? msgs
 		: msgs.slice(prevMsgs.length).filter(m => m.role === 'user')
 
-	let compressedCount = 0
-	if (prevCoreTurn) {
+	const [showCompressed, setShowCompressed] = useState(false)
+
+	const compressedMsgs = useMemo(() => {
+		if (!prevCoreTurn) return []
+		const result: { index: number; prevMsg: MessageBlock; currMsg: MessageBlock }[] = []
 		for (let i = 0; i < Math.min(msgs.length, prevMsgs.length); i++) {
-			if (JSON.stringify(msgs[i]) !== JSON.stringify(prevMsgs[i])) compressedCount++
+			if (JSON.stringify(msgs[i]) !== JSON.stringify(prevMsgs[i])) {
+				result.push({ index: i, prevMsg: prevMsgs[i], currMsg: msgs[i] })
+			}
 		}
-	}
+		return result
+	}, [msgs, prevMsgs, prevCoreTurn])
 
 	const redundantReads = useMemo(() => {
 		let totalRedundant = 0
@@ -794,10 +845,13 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 					<span className="text-(--text-dim)">{turn.modelId}</span>
 					<span className="text-(--text-dim)">{turn.inputTokens.toLocaleString('en-US')} in / {turn.outputTokens.toLocaleString('en-US')} out</span>
 					<span className="text-(--text-dim) font-mono">{fmtCost(turn.cost)}</span>
-					{compressedCount > 0 && (
-						<span className="text-[10px] px-1.5 py-0.5 rounded bg-(--accent-dim) text-(--accent)">
-							{compressedCount} compressed
-						</span>
+					{compressedMsgs.length > 0 && (
+						<button
+							onClick={() => setShowCompressed(s => !s)}
+							className="text-[10px] px-1.5 py-0.5 rounded bg-(--accent-dim) text-(--accent) hover:bg-(--accent)/20 transition-colors"
+						>
+							{compressedMsgs.length} compressed {showCompressed ? '▼' : '▶'}
+						</button>
 					)}
 					{redundantReads.totalRedundant > 0 && (
 						<span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300">
@@ -807,6 +861,10 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 				</div>
 				<div className="h-px flex-1" style={{ backgroundColor: phaseColors[turn.phase] ?? '#444', opacity: 0.3 }} />
 			</div>
+
+			{showCompressed && compressedMsgs.length > 0 && (
+				<CompressedDetails items={compressedMsgs} />
+			)}
 
 			<InlineSystemPrompt curr={currSystem} prev={prevSystem} isPhaseStart={phaseStart} />
 
@@ -843,20 +901,31 @@ export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTur
 		if (initialTurn === undefined) return
 		requestAnimationFrame(() => {
 			const el = turnRefs.current.get(initialTurn)
-			el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+			if (el) {
+				const yOffset = -80
+				const y = el.getBoundingClientRect().top + window.scrollY + yOffset
+				window.scrollTo({ top: y, behavior: 'smooth' })
+			}
 		})
 	}, []) // eslint-disable-line react-hooks/exhaustive-deps
 
 	const handleTurnClick = useCallback((overallIndex: number) => {
 		const el = turnRefs.current.get(overallIndex)
-		el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+		if (!el) return
+		const yOffset = -80
+		const y = el.getBoundingClientRect().top + window.scrollY + yOffset
+		window.scrollTo({ top: y, behavior: 'smooth' })
 	}, [])
 
 	const handleMinimapClick = useCallback((runIndex: number) => {
 		const run = phaseRuns[runIndex]
 		if (run) {
 			const el = turnRefs.current.get(run.startIndex)
-			el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+			if (el) {
+				const yOffset = -80
+				const y = el.getBoundingClientRect().top + window.scrollY + yOffset
+				window.scrollTo({ top: y, behavior: 'smooth' })
+			}
 		}
 	}, [phaseRuns])
 
@@ -868,7 +937,7 @@ export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTur
 
 	return (
 		<>
-			<CycleSearch turns={turns} onNavigate={handleTurnClick} />
+			<CycleSearch />
 			<CycleStats turns={turns} onTurnClick={handleTurnClick} />
 
 			<div className="flex justify-end gap-2 mb-3">
@@ -929,6 +998,7 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 	const trackRef = useRef<HTMLDivElement>(null)
 	const segmentRefs = useRef<HTMLDivElement[]>([])
 	const labelRefs = useRef<HTMLDivElement[]>([])
+	const [segmentHeights, setSegmentHeights] = useState<number[]>([])
 
 	useEffect(() => {
 		let raf = 0
@@ -938,23 +1008,17 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 				const refs = turnRefs.current
 				if (!refs || !trackRef.current || !markerRef.current) return
 
-				const heights: number[] = []
-				for (const run of phaseRuns) {
-					const el = refs.get(run.startIndex)
-					heights.push(el?.offsetHeight ?? 100)
-				}
-				const totalH = heights.reduce((a, b) => a + b, 0) || 1
+				const contentEl = document.querySelector('[data-cycle-content]')
+				if (!contentEl) return
 
-				for (let i = 0; i < heights.length; i++) {
-					const pct = `${(heights[i] / totalH) * 100}%`
-					if (segmentRefs.current[i]) segmentRefs.current[i].style.height = pct
-					if (labelRefs.current[i]) labelRefs.current[i].style.height = pct
-				}
+				const contentRect = contentEl.getBoundingClientRect()
+				const viewportHeight = window.innerHeight
+				const scrollableHeight = contentRect.height - viewportHeight
+				const scrolledIntoContent = -contentRect.top
 
-				const firstEl = refs.get(phaseRuns[0]?.startIndex ?? 0)
-				const contentTop = firstEl ? firstEl.getBoundingClientRect().top + window.scrollY : 0
-				const contentBottom = contentTop + totalH
-				const progress = Math.max(0, Math.min(1, (window.scrollY - contentTop) / (contentBottom - contentTop)))
+				const progress = scrollableHeight > 0
+					? Math.max(0, Math.min(1, scrolledIntoContent / scrollableHeight))
+					: 0
 
 				const trackH = trackRef.current.clientHeight
 				markerRef.current.style.top = `${progress * (trackH - 3)}px`
@@ -971,6 +1035,50 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 		}
 	}, [phaseRuns, turnRefs])
 
+	useEffect(() => {
+		const calcHeights = () => {
+			const refs = turnRefs.current
+			if (!refs || refs.size === 0) return
+
+			const contentEl = document.querySelector('[data-cycle-content]')
+			if (!contentEl) return
+			const contentTop = contentEl.getBoundingClientRect().top + window.scrollY
+			const contentHeight = contentEl.getBoundingClientRect().height
+
+			const heights: number[] = []
+			for (let i = 0; i < phaseRuns.length; i++) {
+				const run = phaseRuns[i]
+				const el = refs.get(run.startIndex)
+				if (!el) {
+					heights.push(1)
+					continue
+				}
+				const startY = el.getBoundingClientRect().top + window.scrollY - contentTop
+
+				let endY = contentHeight
+				if (i < phaseRuns.length - 1) {
+					const nextEl = refs.get(phaseRuns[i + 1].startIndex)
+					if (nextEl) {
+						endY = nextEl.getBoundingClientRect().top + window.scrollY - contentTop
+					}
+				}
+
+				heights.push(Math.max(1, endY - startY))
+			}
+
+			setSegmentHeights(heights)
+		}
+
+		const timer = setTimeout(calcHeights, 300)
+		window.addEventListener('resize', calcHeights)
+		return () => {
+			clearTimeout(timer)
+			window.removeEventListener('resize', calcHeights)
+		}
+	}, [phaseRuns, turnRefs])
+
+	const totalHeight = segmentHeights.reduce((a, b) => a + b, 0) || 1
+
 	return (
 		<div className="fixed right-3 top-4 bottom-4 z-50 flex items-start gap-1">
 			<div
@@ -978,19 +1086,22 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 				className="relative rounded-full overflow-hidden bg-(--bg-card) border border-(--border) h-full"
 				style={{ width: 10 }}
 			>
-				{phaseRuns.map((run, i) => (
-					<div
-						key={i}
-						ref={el => { if (el) segmentRefs.current[i] = el }}
-						className="w-full cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
-						style={{
-							height: `${(1 / phaseRuns.length) * 100}%`,
-							minHeight: 6,
-							backgroundColor: phaseColors[run.phase] ?? '#737373',
-						}}
-						onClick={() => onSegmentClick(i)}
-					/>
-				))}
+				{phaseRuns.map((run, i) => {
+					const pct = segmentHeights.length > 0 ? (segmentHeights[i] / totalHeight) * 100 : (1 / phaseRuns.length) * 100
+					return (
+						<div
+							key={i}
+							ref={el => { if (el) segmentRefs.current[i] = el }}
+							className="w-full cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
+							style={{
+								height: `${pct}%`,
+								minHeight: 6,
+								backgroundColor: phaseColors[run.phase] ?? '#737373',
+							}}
+							onClick={() => onSegmentClick(i)}
+						/>
+					)
+				})}
 				<div
 					ref={markerRef}
 					className="absolute left-0 w-full h-[3px] rounded-full bg-white shadow-[0_0_4px_rgba(255,255,255,0.6)]"
@@ -999,22 +1110,25 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 			</div>
 
 			<div className="flex flex-col h-full">
-				{phaseRuns.map((run, i) => (
-					<div
-						key={i}
-						ref={el => { if (el) labelRefs.current[i] = el }}
-						className="flex items-center cursor-pointer group"
-						style={{ height: `${(1 / phaseRuns.length) * 100}%`, minHeight: 6 }}
-						onClick={() => onSegmentClick(i)}
-					>
-						<span
-							className="text-[9px] leading-none group-hover:text-(--text) transition-colors capitalize whitespace-nowrap"
-							style={{ color: phaseColors[run.phase] ?? '#737373' }}
+				{phaseRuns.map((run, i) => {
+					const pct = segmentHeights.length > 0 ? (segmentHeights[i] / totalHeight) * 100 : (1 / phaseRuns.length) * 100
+					return (
+						<div
+							key={i}
+							ref={el => { if (el) labelRefs.current[i] = el }}
+							className="flex items-center cursor-pointer group"
+							style={{ height: `${pct}%`, minHeight: 6 }}
+							onClick={() => onSegmentClick(i)}
 						>
-							{run.phase[0]?.toUpperCase()}{run.count > 1 ? ` ×${run.count}` : ''}
-						</span>
-					</div>
-				))}
+							<span
+								className="text-[9px] leading-none group-hover:text-(--text) transition-colors capitalize whitespace-nowrap"
+								style={{ color: phaseColors[run.phase] ?? '#737373' }}
+							>
+								{run.phase[0]?.toUpperCase()}{run.count > 1 ? ` ×${run.count}` : ''}
+							</span>
+						</div>
+					)
+				})}
 			</div>
 		</div>
 	)

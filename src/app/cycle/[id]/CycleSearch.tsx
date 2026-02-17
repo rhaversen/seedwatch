@@ -1,40 +1,10 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import type { GeneratedTurn as Turn } from '@/lib/data'
-import { OVERHEAD_PHASES } from '@/lib/phases'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyBlock = Record<string, any>
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 interface SearchMatch {
-	turnIndex: number
-	phase: string
+	element: Element
 	context: string
-	offset: number
-}
-
-function extractTurnText(turn: Turn): string {
-	const parts: string[] = []
-
-	for (const msg of turn.messages as AnyBlock[]) {
-		if (typeof msg.content === 'string') {
-			parts.push(msg.content)
-		} else if (Array.isArray(msg.content)) {
-			for (const b of msg.content as AnyBlock[]) {
-				if (b.type === 'text' && b.text) parts.push(b.text)
-				else if (b.type === 'tool_result' && typeof b.content === 'string') parts.push(b.content)
-				else if (b.type === 'tool_use' && b.input) parts.push(JSON.stringify(b.input))
-			}
-		}
-	}
-
-	for (const block of turn.response as AnyBlock[]) {
-		if (block.type === 'text' && block.text) parts.push(block.text)
-		else if (block.type === 'tool_use' && block.input) parts.push(JSON.stringify(block.input))
-	}
-
-	return parts.join('\n')
 }
 
 function getContext(text: string, idx: number, query: string, radius = 40): string {
@@ -131,25 +101,63 @@ function ensureHighlightStyle() {
 	document.head.appendChild(style)
 }
 
-export function CycleSearch({ turns, onNavigate }: { turns: Turn[]; onNavigate: (overallIndex: number) => void }) {
+function searchDomForMatches(query: string): SearchMatch[] {
+	const container = document.querySelector('[data-cycle-content]')
+	if (!container || query.length < 2) return []
+
+	const q = query.toLowerCase()
+	const matches: SearchMatch[] = []
+	const seen = new Set<Element>()
+
+	const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
+	let node: Text | null
+	while ((node = walker.nextNode() as Text | null)) {
+		const text = node.textContent
+		if (!text) continue
+		const lower = text.toLowerCase()
+		const idx = lower.indexOf(q)
+		if (idx === -1) continue
+
+		let el: Element | null = node.parentElement
+		while (el && !seen.has(el)) {
+			if (el.matches('[data-message-block], [data-tool-block], [data-thinking-block]')) {
+				seen.add(el)
+				matches.push({
+					element: el,
+					context: getContext(text, idx, query),
+				})
+				break
+			}
+			el = el.parentElement
+		}
+	}
+
+	return matches
+}
+
+export function CycleSearch() {
 	const [open, setOpen] = useState(false)
 	const [query, setQuery] = useState('')
 	const inputRef = useRef<HTMLInputElement>(null)
 	const [activeIdx, setActiveIdx] = useState(0)
-
-	const searchableTurns = useMemo(() =>
-		turns.map((t, i) => ({ turn: t, originalIndex: i })).filter(({ turn }) => !OVERHEAD_PHASES.has(turn.phase)),
-		[turns]
-	)
+	const [matches, setMatches] = useState<SearchMatch[]>([])
 
 	useEffect(() => {
 		const handler = (e: KeyboardEvent) => {
 			if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
 				e.preventDefault()
+				const selection = window.getSelection()?.toString().trim() || ''
+				if (selection && selection.length < 100) {
+					setQuery(selection)
+				}
 				setOpen(true)
-				setTimeout(() => inputRef.current?.focus(), 50)
+				setTimeout(() => {
+					inputRef.current?.focus()
+					inputRef.current?.select()
+				}, 50)
 			}
 			if (e.key === 'Escape' && open) {
+				e.preventDefault()
 				setOpen(false)
 				setQuery('')
 			}
@@ -161,41 +169,19 @@ export function CycleSearch({ turns, onNavigate }: { turns: Turn[]; onNavigate: 
 	useEffect(() => {
 		if (open) ensureHighlightStyle()
 		highlightInPage(open ? query : '')
+
+		const newMatches = open ? searchDomForMatches(query) : []
+		setMatches(newMatches)
+		setActiveIdx(0)
+
 		return () => highlightInPage('')
 	}, [query, open])
 
-	const turnTexts = useMemo(() => searchableTurns.map(({ turn }) => extractTurnText(turn)), [searchableTurns])
-
-	const matches = useMemo(() => {
-		if (!query || query.length < 2) return []
-		const q = query.toLowerCase()
-		const results: SearchMatch[] = []
-
-		for (let ti = 0; ti < searchableTurns.length; ti++) {
-			const text = turnTexts[ti]
-			const lower = text.toLowerCase()
-			let lastIdx = -1
-			let pos = 0
-			while ((pos = lower.indexOf(q, pos)) !== -1) {
-				lastIdx = pos
-				pos += 1
-			}
-			if (lastIdx !== -1) {
-				results.push({
-					turnIndex: searchableTurns[ti].originalIndex,
-					phase: searchableTurns[ti].turn.phase,
-					context: getContext(text, lastIdx, query),
-					offset: lastIdx,
-				})
-			}
-		}
-
-		return results
-	}, [query, searchableTurns, turnTexts])
-
 	const navigateTo = useCallback((match: SearchMatch) => {
-		onNavigate(match.turnIndex)
-	}, [onNavigate])
+		const yOffset = -80
+		const y = match.element.getBoundingClientRect().top + window.scrollY + yOffset
+		window.scrollTo({ top: y, behavior: 'smooth' })
+	}, [])
 
 	const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
 		if (e.key === 'Enter' && matches.length > 0) {
@@ -207,49 +193,44 @@ export function CycleSearch({ turns, onNavigate }: { turns: Turn[]; onNavigate: 
 		}
 	}, [matches, activeIdx, navigateTo])
 
-	useEffect(() => {
-		setActiveIdx(0)
-	}, [query])
-
 	if (!open) return null
 
 	return (
-		<div className="fixed top-0 left-0 right-0 z-[100] flex justify-center pointer-events-none">
-			<div className="mt-2 bg-(--bg-card) border border-(--border) rounded-lg shadow-2xl px-3 py-2 w-full max-w-xl pointer-events-auto">
-				<div className="flex items-center gap-2">
+		<div className="fixed top-2 right-4 z-[100]">
+			<div className="bg-(--bg-card) border border-(--border) rounded-lg shadow-2xl px-2 py-1.5 w-72">
+				<div className="flex items-center gap-1.5">
 					<input
 						ref={inputRef}
 						type="text"
 						value={query}
 						onChange={e => setQuery(e.target.value)}
 						onKeyDown={handleKeyDown}
-						placeholder="Search in cycle…"
-						className="flex-1 bg-transparent border border-(--border) rounded px-2 py-1 text-xs outline-none focus:border-(--accent) text-(--text) placeholder:text-(--text-dim)"
+						placeholder="Search…"
+						className="flex-1 bg-transparent border border-(--border) rounded px-1.5 py-0.5 text-[11px] outline-none focus:border-(--accent) text-(--text) placeholder:text-(--text-dim)"
 						autoFocus
 					/>
-					<span className="text-[10px] text-(--text-dim) shrink-0">
+					<span className="text-[9px] text-(--text-dim) shrink-0 tabular-nums">
 						{matches.length > 0
 							? `${activeIdx + 1}/${matches.length}`
-							: query.length >= 2 ? 'none' : ''
+							: query.length >= 2 ? '0' : ''
 						}
 					</span>
 					<button
 						onClick={() => { setOpen(false); setQuery('') }}
-						className="text-(--text-dim) hover:text-(--text) text-xs px-0.5"
+						className="text-(--text-dim) hover:text-(--text) text-[10px] px-0.5"
 					>
 						✕
 					</button>
 				</div>
 
 				{matches.length > 0 && (
-					<div className="mt-1.5 max-h-48 overflow-y-auto space-y-px">
+					<div className="mt-1 max-h-40 overflow-y-auto space-y-px">
 						{matches.map((m, i) => (
 							<button
 								key={i}
 								onClick={() => { setActiveIdx(i); navigateTo(m) }}
-								className={`w-full text-left px-1.5 py-0.5 rounded text-[10px] font-mono leading-tight transition-colors ${i === activeIdx ? 'bg-(--accent-dim) text-(--text)' : 'text-(--text-dim) hover:bg-(--bg-hover)'}`}
+								className={`w-full text-left px-1 py-0.5 rounded text-[9px] font-mono leading-tight transition-colors ${i === activeIdx ? 'bg-(--accent-dim) text-(--text)' : 'text-(--text-dim) hover:bg-(--bg-hover)'}`}
 							>
-								<span className="font-semibold capitalize opacity-60 mr-1">{m.phase}#{m.turnIndex + 1}</span>
 								<HighlightedContext context={m.context} />
 							</button>
 						))}
