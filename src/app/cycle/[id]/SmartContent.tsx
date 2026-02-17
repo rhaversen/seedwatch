@@ -125,7 +125,3 @@ export function SmartContent({ text, className = '', maxHeight = '20rem' }: {
 		</div>
 	)
 }
-
-export function isJsonString(text: string): boolean {
-	return isLikelyJson(text)
-}
