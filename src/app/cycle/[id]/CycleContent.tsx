@@ -427,6 +427,12 @@ function fmtCost(n: number): string {
 }
 
 function extractBlockText(block: MessageBlock): string {
+	if (block.type === 'thinking') {
+		const text = block.thinking ?? block.text ?? ''
+		if (!text) return ''
+		const chars = text.length >= 1000 ? `${(text.length / 1000).toFixed(1)}k` : String(text.length)
+		return `> 💭 *thinking — ${chars} chars*`
+	}
 	if (block.type === 'text') return block.text ?? ''
 	if (block.type === 'tool_use') {
 		const input = typeof block.input === 'object' ? JSON.stringify(block.input, null, 2) : String(block.input ?? '')
@@ -480,7 +486,7 @@ function buildConversationMd(flow: FlowEntry[], turns: Turn[]): string {
 
 		const newMsgs = prevCoreTurn === null
 			? msgs
-			: msgs.slice(prevMsgs.length)
+			: msgs.slice(prevMsgs.length).filter(m => m.role === 'user')
 
 		for (const msg of newMsgs) {
 			const role = msg.role ?? 'unknown'
