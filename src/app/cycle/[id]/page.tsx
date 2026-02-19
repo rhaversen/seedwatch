@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { getCycleDetail } from '@/lib/data'
 import { notFound } from 'next/navigation'
 import { CycleContent } from './CycleContent'
+import { Cost } from '../../Cost'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,7 +35,7 @@ export default async function CyclePage({ params, searchParams }: Props) {
 			<div className="border border-(--border) rounded-lg p-5 mb-6">
 				<h1 className="text-xl font-semibold mb-3">{usage.planTitle}</h1>
 				<div className="flex gap-6 text-sm text-(--text-dim) flex-wrap">
-					<span>${usage.totalCost.toFixed(4)}</span>
+					<span><Cost value={usage.totalCost} /></span>
 					<span>{usage.totalCalls} API calls</span>
 					<span>{(usage.totalInputTokens / 1000).toFixed(1)}k in / {(usage.totalOutputTokens / 1000).toFixed(1)}k out</span>
 					{(usage.totalCacheReadTokens > 0 || usage.totalCacheWrite5mTokens > 0 || usage.totalCacheWrite1hTokens > 0) && (

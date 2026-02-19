@@ -3,6 +3,7 @@
 import { useMemo, useState, useRef, useEffect } from 'react'
 import type { GeneratedTurn as Turn } from '@/lib/data'
 import { OVERHEAD_PHASES, phaseColors } from '@/lib/phases'
+import { useCurrency } from '@/lib/CurrencyProvider'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Msg = Record<string, any>
@@ -151,18 +152,13 @@ function fmt(n: number): string {
 	return String(n)
 }
 
-function fmtCost(n: number): string {
-	if (n >= 0.01) return `$${n.toFixed(2)}`
-	if (n >= 0.001) return `$${n.toFixed(3)}`
-	return `$${n.toFixed(4)}`
-}
-
 const TOOL_COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16']
 const MIN_PX_PER_TURN = 8
 const FIT_WIDTH = 700
 
 export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?: (overallIndex: number) => void }) {
 	const entries = useMemo(() => buildCoreEntries(turns), [turns])
+	const { formatCost: fmtCost } = useCurrency()
 	const [hover, setHover] = useState<number | null>(null)
 	const [zoomedOut, setZoomedOut] = useState(false)
 	const svgRef = useRef<SVGSVGElement>(null)

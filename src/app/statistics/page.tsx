@@ -2,6 +2,7 @@ import { getStatistics } from '@/lib/data'
 import type { Statistics, BuilderTurnPoint, SystemPromptBreakdown, MemoryCallDetail, CycleOverview, PhaseStats, FixPhaseSegment, TokenBucket, ToolUsageStat, PhaseProductivity, RepeatedFileRead, CostEfficiencyBand, CostVelocity } from '@/lib/data'
 import DownloadButton from './DownloadButton'
 import { phaseColors } from '@/lib/phases'
+import { Cost } from '../Cost'
 
 export const dynamic = 'force-dynamic'
 
@@ -84,7 +85,7 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 	const avgBuilderTurns = Math.round((stats.phaseStats.find(p => p.phase === 'builder')?.calls ?? 0) / Math.max(stats.cycleCount, 1))
 	const cacheSavingsPerCycle = (uncachedTokens * avgBuilderTurns * 0.9 * stats.effectiveInputRate) / 1_000_000
 
-	const findings: { icon: string; label: string; detail: string; color: string }[] = []
+	const findings: { icon: string; label: string; detail: React.ReactNode; color: string }[] = []
 
 	if (fixProd && fixCostPct > 0) {
 		findings.push({
@@ -99,7 +100,7 @@ function ExecutiveSummary({ stats }: { stats: Statistics }) {
 		findings.push({
 			icon: String(findings.length + 1),
 			label: 'Uncached system prompt',
-			detail: `${fmt(uncachedTokens)} tokens of builder system prompt are sent uncached every turn. Caching saves ~${fmtCost(cacheSavingsPerCycle)}/cycle.`,
+			detail: <>{fmt(uncachedTokens)} tokens of builder system prompt are sent uncached every turn. Caching saves ~<Cost value={cacheSavingsPerCycle} />/cycle.</>,
 			color: 'var(--warn)',
 		})
 	}
@@ -133,15 +134,15 @@ function ToplineStats({ stats }: { stats: Statistics }) {
 	return (
 		<div className="grid grid-cols-2 md:grid-cols-4 gap-4">
 			{[
-				{ label: 'Total Cost', value: fmtCost(stats.totalCost) },
+				{ label: 'Total Cost', value: <Cost value={stats.totalCost} /> },
 				{ label: 'Total API Calls', value: String(stats.totalCalls) },
-				{ label: 'Avg Cost / Cycle', value: fmtCost(stats.avgCostPerCycle) },
+				{ label: 'Avg Cost / Cycle', value: <Cost value={stats.avgCostPerCycle} /> },
 				{ label: 'Cycles Analyzed', value: String(stats.cycleCount) },
 				{ label: 'Total Input Tokens', value: fmt(stats.totalInputTokens) },
 				{ label: 'Total Output Tokens', value: fmt(stats.totalOutputTokens) },
 				{ label: 'Avg Input / Cycle', value: fmt(stats.avgInputTokensPerCycle) },
 				{ label: 'Input/Output Ratio', value: `${(stats.totalInputTokens / Math.max(stats.totalOutputTokens, 1)).toFixed(1)}x` },
-				{ label: 'Cost / Output Token', value: `$${(stats.totalCost / Math.max(stats.totalOutputTokens, 1) * 1000).toFixed(2)}/1k` },
+				{ label: 'Cost / Output Token', value: <><Cost value={stats.totalCost / Math.max(stats.totalOutputTokens, 1) * 1000} />/1k</> },
 				{ label: 'Cache Read Tokens', value: fmt(stats.totalCacheReadTokens) },
 				{ label: 'Cache Write 5m', value: fmt(stats.totalCacheWrite5mTokens) },
 				{ label: 'Cache Write 1h', value: fmt(stats.totalCacheWrite1hTokens) },
@@ -174,16 +175,16 @@ function CostVelocityPanel({ velocity, cycleCount }: { velocity: CostVelocity; c
 
 			<div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
 				{[
-					{ label: 'Cost / Hour', value: fmtCost(velocity.costPerHour) },
-					{ label: 'Cost / Day', value: fmtCost(velocity.costPerDay) },
-					{ label: 'Projected / Month', value: fmtCost(velocity.projectedMonthlyCost) },
+					{ label: 'Cost / Hour', value: <Cost value={velocity.costPerHour} /> },
+					{ label: 'Cost / Day', value: <Cost value={velocity.costPerDay} /> },
+					{ label: 'Projected / Month', value: <Cost value={velocity.projectedMonthlyCost} /> },
 					{ label: 'Cycles / Day', value: velocity.cyclesPerDay.toFixed(1) },
 					{ label: 'Avg Cycle Duration', value: fmtDuration(velocity.avgCycleDurationMinutes) },
 					{ label: 'Median Cycle Duration', value: fmtDuration(velocity.medianCycleDurationMinutes) },
 					{ label: 'Fastest Cycle', value: fmtDuration(velocity.minCycleDurationMinutes) },
 					{ label: 'Slowest Cycle', value: fmtDuration(velocity.maxCycleDurationMinutes) },
-					{ label: 'Avg Cost / Cycle', value: fmtCost(velocity.avgCycleCost) },
-					{ label: 'Median Cost / Cycle', value: fmtCost(velocity.medianCycleCost) },
+					{ label: 'Avg Cost / Cycle', value: <Cost value={velocity.avgCycleCost} /> },
+					{ label: 'Median Cost / Cycle', value: <Cost value={velocity.medianCycleCost} /> },
 					{ label: 'Time Span', value: elapsedLabel },
 					{ label: 'Total Cycles', value: String(cycleCount) },
 				].map(s => (
@@ -336,20 +337,20 @@ function PhaseBreakdown({ phaseStats, totalCost, totalInput, totalOutput }: { ph
 							<td className="py-2 text-right font-mono">{fmt(p.inputTokens)}</td>
 							<td className="py-2 text-right font-mono">{fmt(p.outputTokens)}</td>
 							<td className="py-2 text-right font-mono">
-								{fmtCost(p.cost)}
+								<Cost value={p.cost} />
 								<span className="text-(--text-dim) text-xs ml-1">{pct(p.cost, totalCost)}</span>
 							</td>
 							<td className="py-2 text-right font-mono text-(--text-dim)">
-								{fmtCost(p.inputCost)}
+								<Cost value={p.inputCost} />
 								<span className="text-xs ml-1 opacity-60">{pct(p.inputCost, totalInputCost)}</span>
 								<span className="text-xs ml-1 opacity-40">{pct(p.inputCost, totalCost)}</span>
 							</td>
 							<td className="py-2 text-right font-mono text-(--text-dim)">
-								{fmtCost(p.outputCost)}
+								<Cost value={p.outputCost} />
 								<span className="text-xs ml-1 opacity-60">{pct(p.outputCost, totalOutputCost)}</span>
 								<span className="text-xs ml-1 opacity-40">{pct(p.outputCost, totalCost)}</span>
 							</td>
-							<td className="py-2 text-right font-mono">{fmtCost(p.avgCost)}</td>
+							<td className="py-2 text-right font-mono"><Cost value={p.avgCost} /></td>
 						</tr>
 					))}
 				</tbody>
@@ -373,7 +374,7 @@ function CycleComparison({ overviews }: { overviews: CycleOverview[] }) {
 									<span className="text-(--text-dim) font-mono mr-2">#{c.index + 1}</span>
 									{c.title}
 								</span>
-								<span className="font-mono text-xs">{fmtCost(c.totalCost)}</span>
+								<span className="font-mono text-xs"><Cost value={c.totalCost} /></span>
 							</div>
 							<div className="relative h-5 rounded-full overflow-hidden bg-(--bg-hover)">
 								{(['planner', 'builder', 'memory', 'reflect'] as const).reduce<{ elements: React.ReactNode[]; offset: number }>((acc, phase) => {
@@ -470,7 +471,7 @@ function CycleScorecard({ stats }: { stats: Statistics }) {
 							<td className="py-1 pr-3 text-right">
 								<span className={r.costPerOutput > 0.1 ? 'text-(--error)' : 'text-(--accent)'}>${r.costPerOutput.toFixed(3)}</span>
 							</td>
-							<td className="py-1 text-right">{fmtCost(r.totalCost)}</td>
+							<td className="py-1 text-right"><Cost value={r.totalCost} /></td>
 						</tr>
 					))}
 				</tbody>
@@ -585,7 +586,7 @@ function BuilderEscalation({ points }: { points: BuilderTurnPoint[] }) {
 							<td className="py-1 pr-3 text-right">{fmt(r.medianInput)}</td>
 							<td className="py-1 pr-3 text-right text-(--error)">+{fmt(r.rate)}</td>
 							<td className="py-1 pr-3 text-right">{fmt(r.avgOutput)}</td>
-							<td className="py-1 text-right">{fmtCost(r.totalCost)}</td>
+							<td className="py-1 text-right"><Cost value={r.totalCost} /></td>
 						</tr>
 					))}
 				</tbody>
@@ -628,7 +629,7 @@ function BuilderEscalation({ points }: { points: BuilderTurnPoint[] }) {
 												<td className={`py-1 pr-3 text-xs font-sans ${p.isFixPhaseStart ? 'text-(--error)' : 'text-(--text-dim)'}`}>{label}</td>
 												<td className="py-1 pr-3 text-right">{fmt(p.inputTokens)}</td>
 												<td className="py-1 pr-3 text-right">{fmt(p.outputTokens)}</td>
-												<td className="py-1 pr-3 text-right">{fmtCost(p.cost)}</td>
+												<td className="py-1 pr-3 text-right"><Cost value={p.cost} /></td>
 												<td className="py-1 pr-3 text-right">{p.userMsgCount}u/{p.assistantMsgCount}a</td>
 												<td className="py-1 text-right">{p.compressedToolResults}/{p.toolResultCount}</td>
 											</tr>
@@ -652,7 +653,7 @@ function BuilderEscalation({ points }: { points: BuilderTurnPoint[] }) {
 					</div>
 					<div>
 						<span className="text-(--text-dim)">Cost of low-output turns: </span>
-						<span className="font-mono text-(--error)">{fmtCost(lowOutputTurns.reduce((s, p) => s + p.cost, 0))}</span>
+						<span className="font-mono text-(--error)"><Cost value={lowOutputTurns.reduce((s, p) => s + p.cost, 0)} /></span>
 					</div>
 					<div>
 						<span className="text-(--text-dim)">Input/Output ratio: </span>
@@ -700,7 +701,7 @@ function FixPhaseAnalysis({ segments, points, totalCost, effectiveRate }: { segm
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
 					<div className="text-xs text-(--text-dim)">Total Fix Cost</div>
-					<div className="text-lg font-mono font-semibold">{fmtCost(totalFixCost)}</div>
+					<div className="text-lg font-mono font-semibold"><Cost value={totalFixCost} /></div>
 					<div className="text-xs text-(--text-dim)">{pct(totalFixCost, totalCost)} of total</div>
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
@@ -735,7 +736,7 @@ function FixPhaseAnalysis({ segments, points, totalCost, effectiveRate }: { segm
 							<td className="py-1 pr-3 text-right">{seg.turnCount}</td>
 							<td className="py-1 pr-3 text-right">{fmt(seg.firstMsgChars)}</td>
 							<td className="py-1 pr-3 text-right">{fmt(seg.firstMsgChars / 4)}</td>
-							<td className="py-1 pr-3 text-right">{fmtCost(seg.totalCost)}</td>
+							<td className="py-1 pr-3 text-right"><Cost value={seg.totalCost} /></td>
 							<td className="py-1 text-right">{fmt(seg.totalInputTokens)}</td>
 						</tr>
 					))}
@@ -750,7 +751,7 @@ function FixPhaseAnalysis({ segments, points, totalCost, effectiveRate }: { segm
 					the first user message and abbreviating file creations to filenames-only would save:
 				</p>
 				<div className="font-mono text-(--accent)">
-					~{fmt(avgFixStartTokens * totalFixTurns * 0.9)} tokens at 90% cache discount = ~{fmtCost((avgFixStartTokens * totalFixTurns * 0.9 * effectiveRate) / 1_000_000)}/cycle
+					~{fmt(avgFixStartTokens * totalFixTurns * 0.9)} tokens at 90% cache discount = ~<Cost value={(avgFixStartTokens * totalFixTurns * 0.9 * effectiveRate) / 1_000_000} />/cycle
 				</div>
 			</div>
 		</section>
@@ -811,7 +812,7 @@ function InputTokenSpikes({ points, effectiveRate }: { points: BuilderTurnPoint[
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
 					<div className="text-xs text-(--text-dim)">Spike Cost (est.)</div>
-					<div className="text-lg font-mono font-semibold text-(--warn)">{fmtCost(totalSpikeCost)}</div>
+					<div className="text-lg font-mono font-semibold text-(--warn)"><Cost value={totalSpikeCost} /></div>
 				</div>
 			</div>
 
@@ -1013,7 +1014,7 @@ function TokenThresholdAnalysis({ buckets, totalBuilderCost }: { buckets: TokenB
 								}}
 							/>
 							<span className="relative text-[10px] font-mono leading-5 pl-2">
-								{b.count} turns ({pct(b.count, totalTurns)}) — {fmtCost(b.totalCost)}
+								{b.count} turns ({pct(b.count, totalTurns)}) — <Cost value={b.totalCost} />
 							</span>
 						</div>
 					</div>
@@ -1028,7 +1029,7 @@ function TokenThresholdAnalysis({ buckets, totalBuilderCost }: { buckets: TokenB
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
 					<div className="text-xs text-(--text-dim)">Cost above 15k threshold</div>
-					<div className="text-lg font-mono font-semibold text-(--warn)">{fmtCost(above15kCost)}</div>
+					<div className="text-lg font-mono font-semibold text-(--warn)"><Cost value={above15kCost} /></div>
 					<div className="text-xs text-(--text-dim)">{pct(above15kCost, totalBuilderCost)} of builder cost</div>
 				</div>
 			</div>
@@ -1368,7 +1369,7 @@ function MemoryOverhead({ details, totalCost }: { details: MemoryCallDetail[]; t
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
 					<div className="text-xs text-(--text-dim)">Total Memory Cost</div>
-					<div className="text-lg font-mono font-semibold">{fmtCost(totalMemoryCost)}</div>
+					<div className="text-lg font-mono font-semibold"><Cost value={totalMemoryCost} /></div>
 					<div className="text-xs text-(--text-dim)">{pct(totalMemoryCost, totalCost)} of total</div>
 				</div>
 				<div className="border border-(--border) rounded-lg p-3">
@@ -1401,7 +1402,7 @@ function MemoryOverhead({ details, totalCost }: { details: MemoryCallDetail[]; t
 								<td className="py-1 pr-3 font-sans">{calls[0].cycleTitle}</td>
 								<td className="py-1 pr-3 text-right">{calls.length}</td>
 								<td className="py-1 pr-3 text-right">{fmt(calls.reduce((s, c) => s + c.inputTokens, 0))}</td>
-								<td className="py-1 pr-3 text-right">{fmtCost(calls.reduce((s, c) => s + c.cost, 0))}</td>
+							<td className="py-1 pr-3 text-right"><Cost value={calls.reduce((s, c) => s + c.cost, 0)} /></td>
 								<td className="py-1 pr-3 text-right">{fmt(calls.reduce((s, c) => s + c.contentChars, 0) / calls.length)} ch</td>
 								<td className="py-1 text-right">
 									{short > 0
@@ -1419,7 +1420,7 @@ function MemoryOverhead({ details, totalCost }: { details: MemoryCallDetail[]; t
 				<div className="p-3 bg-(--bg-hover) rounded-lg text-xs text-(--text-dim)">
 					<strong className="text-(--warn)">{shortContent.length} {shortContent.length === 1 ? 'call' : 'calls'}</strong> had content under 200 chars —
 					short enough to use as-is without LLM summarization.
-					Cost of these unnecessary calls: <span className="font-mono text-(--warn)">{fmtCost(shortContentCost)}</span>
+					Cost of these unnecessary calls: <span className="font-mono text-(--warn)"><Cost value={shortContentCost} /></span>
 				</div>
 			)}
 		</section>
@@ -1508,7 +1509,7 @@ function BuildVsFixProductivity({ productivity }: { productivity: PhaseProductiv
 						<div className="flex items-baseline justify-between text-sm mb-1">
 							<span className="font-medium">{p.label}</span>
 							<span className="font-mono text-xs">
-								{fmtCost(p.totalCost)} ({p.turns} turns)
+								<Cost value={p.totalCost} /> ({p.turns} turns)
 							</span>
 						</div>
 						<div className="relative h-5 rounded-full overflow-hidden bg-(--bg-hover)">
@@ -1544,7 +1545,7 @@ function BuildVsFixProductivity({ productivity }: { productivity: PhaseProductiv
 							<td className="py-1 pr-3 text-right">{p.turns}</td>
 							<td className="py-1 pr-3 text-right">{fmt(p.totalInputTokens)}</td>
 							<td className="py-1 pr-3 text-right">{fmt(p.totalOutputTokens)}</td>
-							<td className="py-1 pr-3 text-right">{fmtCost(p.totalCost)}</td>
+							<td className="py-1 pr-3 text-right"><Cost value={p.totalCost} /></td>
 							<td className="py-1 pr-3 text-right">{fmt(p.avgOutputPerTurn)}</td>
 							<td className="py-1 text-right">
 								{p.costPerOutputToken > 0
@@ -1625,7 +1626,7 @@ function CostEfficiencyCurve({ bands }: { bands: CostEfficiencyBand[] }) {
 						<tr key={b.range} className="border-b border-(--border)/20">
 							<td className="py-1 pr-3 font-sans">{b.range}</td>
 							<td className="py-1 pr-3 text-right">{b.turns}</td>
-							<td className="py-1 pr-3 text-right">{fmtCost(b.totalCost)}</td>
+							<td className="py-1 pr-3 text-right"><Cost value={b.totalCost} /></td>
 							<td className="py-1 pr-3 text-right">{fmt(b.totalOutput)}</td>
 							<td className="py-1 pr-3 text-right">{fmt(b.avgInputTokens)}</td>
 							<td className="py-1 text-right">
@@ -1742,7 +1743,7 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 		{
 			title: 'Cache builder system prompt',
 			savings: uncachedBuilderTokens > 0
-				? `~${fmtCost(cacheSavings)}/cycle`
+				? <>~<Cost value={cacheSavings} />/cycle</>
 				: 'Already cached \u2713',
 			dollarSavings: uncachedBuilderTokens > 0 ? cacheSavings : 0,
 			impact: uncachedBuilderTokens > 0 ? 'HIGH' : 'N/A',
@@ -1751,7 +1752,7 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 		},
 		{
 			title: 'Reduce uncached system prompt content',
-			savings: `~${fmtCost(privateDeclSavings)}/cycle`,
+			savings: <>~<Cost value={privateDeclSavings} />/cycle</>,
 			dollarSavings: privateDeclSavings,
 			impact: uncachedBuilderTokens > 0 ? 'HIGH' : 'N/A',
 			description: `Uncached system blocks contain ${fmt(uncachedBuilderTokens)} tokens. Reducing this content by ~50% (e.g. filtering internal declarations, abbreviating) would save ${fmt(uncachedBuilderTokens * 0.5)} tokens/turn.`,
@@ -1769,15 +1770,15 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 		},
 		{
 			title: 'Use cheaper model for memory summarization',
-			savings: memoryPhase ? `~${fmtCost(memoryPhase.cost * 0.67 / Math.max(stats.cycleCount, 1))}/cycle` : 'N/A',
+			savings: memoryPhase ? <>~<Cost value={memoryPhase.cost * 0.67 / Math.max(stats.cycleCount, 1)} />/cycle</> : 'N/A',
 			dollarSavings: memoryPhase ? (memoryPhase.cost * 0.67 / Math.max(stats.cycleCount, 1)) : 0,
 			impact: 'LOW',
-			description: `Memory phase generates ~${avgSummaryWords}-word summaries using ${memoryModelName}. A cheaper model handles short summarization identically.${memoryPhase ? ` Currently ${memoryPhase.calls} calls costing ${fmtCost(memoryPhase.cost)}.` : ''}`,
+			description: <>Memory phase generates ~{avgSummaryWords}-word summaries using {memoryModelName}. A cheaper model handles short summarization identically.{memoryPhase ? <> Currently {memoryPhase.calls} calls costing <Cost value={memoryPhase.cost} />.</> : ''}</>,
 			applicable: !!memoryPhase,
 		},
 		{
 			title: 'Skip summarization for short memories',
-			savings: shortMemoryCalls > 0 ? `~${fmtCost(shortMemoryCost / Math.max(stats.cycleCount, 1))}/cycle` : 'N/A',
+			savings: shortMemoryCalls > 0 ? <>~<Cost value={shortMemoryCost / Math.max(stats.cycleCount, 1)} />/cycle</> : 'N/A',
 			dollarSavings: shortMemoryCalls > 0 ? shortMemoryCost / Math.max(stats.cycleCount, 1) : 0,
 			impact: 'LOW',
 			description: `${shortMemoryCalls} memory ${shortMemoryCalls === 1 ? 'call' : 'calls'} had content <200 chars \u2014 already short enough to use verbatim as the summary.`,
@@ -1794,11 +1795,11 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 		{
 			title: 'Cache fixPatch message + abbreviate diff',
 			savings: fixSegments.length > 0
-				? `~${fmtCost(fixCacheSavings)}/cycle`
+				? <>~<Cost value={fixCacheSavings} />/cycle</>
 				: 'N/A',
 			dollarSavings: fixSegments.length > 0 ? fixCacheSavings : 0,
 			impact: fixSegments.length > 0 ? 'HIGH' : 'N/A',
-			description: `${fixSegments.length} fix phases detected with ${totalFixTurns} turns costing ${fmtCost(totalFixCost)}. The full git diff (~${fmt(avgFixFirstMsgTokens)} tokens) is sent uncached every fix turn. Caching it and abbreviating file creations would save most of this.`,
+			description: <>{fixSegments.length} fix phases detected with {totalFixTurns} turns costing <Cost value={totalFixCost} />. The full git diff (~{fmt(avgFixFirstMsgTokens)} tokens) is sent uncached every fix turn. Caching it and abbreviating file creations would save most of this.</>,
 			applicable: fixSegments.length > 0,
 		},
 		{
@@ -1814,7 +1815,7 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 			savings: above15kTurns > 0 ? `${above15kTurns} turns (${pct(above15kCost, builderPhase?.cost ?? 1)} of builder cost)` : 'N/A',
 			dollarSavings: above15kCost * 0.3 / Math.max(stats.cycleCount, 1),
 			impact: above15kTurns > 0 ? 'MEDIUM' : 'N/A',
-			description: `${above15kTurns} builder turns exceed 15k input tokens, costing ${fmtCost(above15kCost)}.${crossoverTurn ? ` After the system/user crossover (~turn ${crossoverTurn}), messages dominate input.` : ''} Aggressive compression above 15k would cap costs.`,
+			description: <>{above15kTurns} builder turns exceed 15k input tokens, costing <Cost value={above15kCost} />.{crossoverTurn ? <> After the system/user crossover (~turn {crossoverTurn}), messages dominate input.</> : ''} Aggressive compression above 15k would cap costs.</>,
 			applicable: above15kTurns > 0,
 		},
 	]
@@ -1873,21 +1874,21 @@ function OptimizationOpportunities({ stats }: { stats: Statistics }) {
 						<div className="space-y-1 text-xs font-mono">
 							<div className="flex justify-between py-1 border-b border-(--border)">
 								<span className="text-(--text-dim)">Current avg cost/cycle</span>
-								<span className="text-(--error)">{fmtCost(stats.avgCostPerCycle)}</span>
+							<span className="text-(--error)"><Cost value={stats.avgCostPerCycle} /></span>
 							</div>
 							{savingsEstimates.map((o, i) => (
 								<div key={i} className="flex justify-between py-1 border-b border-(--border)/30">
 									<span className="text-(--text-dim)">&minus; {o.title}</span>
-									<span className="text-(--accent)">&minus;{fmtCost(o.dollarSavings)} &rarr; {fmtCost(runningCosts[i])}</span>
+									<span className="text-(--accent)">&minus;<Cost value={o.dollarSavings} /> &rarr; <Cost value={runningCosts[i]} /></span>
 								</div>
 							))}
 							<div className="flex justify-between py-2 font-semibold text-sm">
 								<span>Projected cost/cycle</span>
-								<span className="text-(--accent)">{fmtCost(finalCost)}</span>
+								<span className="text-(--accent)"><Cost value={finalCost} /></span>
 							</div>
 							<div className="text-(--text-dim) font-sans">
 								Total reduction: <span className="font-mono text-(--accent)">{pct(stats.avgCostPerCycle - finalCost, stats.avgCostPerCycle)}</span> (
-								<span className="font-mono">{fmtCost(stats.avgCostPerCycle - finalCost)}/cycle</span>)
+								<span className="font-mono"><Cost value={stats.avgCostPerCycle - finalCost} />/cycle</span>)
 							</div>
 							{theoreticalReduction > 30 && (
 								<div className="text-(--warn) font-sans mt-2 text-[10px]">

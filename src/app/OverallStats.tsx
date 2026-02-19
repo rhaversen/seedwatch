@@ -4,6 +4,7 @@ import { useMemo, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import type { TurnStatRow } from '@/lib/data'
 import { OVERHEAD_PHASES, phaseColors } from '@/lib/phases'
+import { useCurrency } from '@/lib/CurrencyProvider'
 
 interface CoreEntry {
 	row: TurnStatRow
@@ -68,16 +69,11 @@ function fmt(n: number): string {
 	return String(n)
 }
 
-function fmtCost(n: number): string {
-	if (n >= 0.01) return `$${n.toFixed(2)}`
-	if (n >= 0.001) return `$${n.toFixed(3)}`
-	return `$${n.toFixed(4)}`
-}
-
 export function OverallStats({ turns }: { turns: TurnStatRow[] }) {
 	const [hover, setHover] = useState<number | null>(null)
 	const svgRef = useRef<SVGSVGElement>(null)
 	const router = useRouter()
+	const { formatCost: fmtCost } = useCurrency()
 
 	const entries = useMemo(() => buildCoreEntries(turns), [turns])
 

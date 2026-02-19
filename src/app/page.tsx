@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { getCycles, getAllTurnStats } from '@/lib/data'
 import { OverallStats } from './OverallStats'
+import { Cost } from './Cost'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,7 +36,7 @@ export default async function CyclesPage() {
       <div className="flex items-baseline justify-between mb-6">
         <h1 className="text-2xl font-semibold">Cycles</h1>
         <span className="text-sm text-(--text-dim)">
-          {cycles.length} cycles &middot; ${totalCost.toFixed(4)} total
+          {cycles.length} cycles &middot; <Cost value={totalCost} /> total
         </span>
       </div>
 
@@ -56,7 +57,7 @@ export default async function CyclesPage() {
                 <span className="font-medium">{cycle.planTitle}</span>
               </div>
               <div className="flex items-center gap-4 text-sm text-(--text-dim)">
-                <span>${cycle.totalCost.toFixed(4)}</span>
+                <span><Cost value={cycle.totalCost} /></span>
                 <span>{cycle.totalCalls} calls</span>
                 <span>
                   {new Date(cycle.createdAt).toLocaleDateString('en-US', {
