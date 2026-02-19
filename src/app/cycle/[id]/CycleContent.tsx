@@ -6,6 +6,7 @@ import { CycleSearch } from './CycleSearch'
 import { SmartContent } from './SmartContent'
 import type { GeneratedTurn as Turn } from '@/lib/data'
 import { OVERHEAD_PHASES, phaseColors, phaseIcons } from '@/lib/phases'
+import { useCurrency } from '@/lib/CurrencyProvider'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SystemBlock = Record<string, any>
@@ -420,7 +421,8 @@ function computePhaseRuns(flow: FlowEntry[]): PhaseRun[] {
 	return runs
 }
 
-function fmtCost(n: number): string {
+function fmtCost(n: number, formatCost?: (n: number) => string): string {
+	if (formatCost) return formatCost(n)
 	if (n >= 0.01) return `$${n.toFixed(2)}`
 	if (n >= 0.001) return `$${n.toFixed(3)}`
 	return `$${n.toFixed(4)}`
@@ -454,12 +456,12 @@ function extractMsgText(msg: MessageBlock): string {
 	return JSON.stringify(msg.content, null, 2)
 }
 
-function buildConversationMd(flow: FlowEntry[], turns: Turn[]): string {
+function buildConversationMd(flow: FlowEntry[], turns: Turn[], formatCost?: (n: number) => string): string {
 	const lines: string[] = []
 	const totalCost = turns.reduce((s, t) => s + t.cost, 0)
 	lines.push(`# Conversation Export`)
 	lines.push('')
-	lines.push(`> ${turns.length} turns · ${fmtCost(totalCost)} total cost`)
+	lines.push(`> ${turns.length} turns · ${fmtCost(totalCost, formatCost)} total cost`)
 	lines.push('')
 
 	for (const entry of flow) {
@@ -477,11 +479,11 @@ function buildConversationMd(flow: FlowEntry[], turns: Turn[]): string {
 
 		for (const oh of entry.overheadBefore) {
 			const cost = oh.turns.reduce((s, t) => s + t.cost, 0)
-			lines.push(`> ${phaseIcons[oh.phase] ?? '⚙️'} **${oh.phase}** ×${oh.turns.length} · ${fmtCost(cost)}`)
+			lines.push(`> ${phaseIcons[oh.phase] ?? '⚙️'} **${oh.phase}** ×${oh.turns.length} · ${fmtCost(cost, formatCost)}`)
 			lines.push('')
 		}
 
-		lines.push(`### Turn #${overallIndex + 1} — ${turn.phase} · ${turn.modelId} · ${turn.inputTokens.toLocaleString()} in / ${turn.outputTokens.toLocaleString()} out · ${fmtCost(turn.cost)}`)
+		lines.push(`### Turn #${overallIndex + 1} — ${turn.phase} · ${turn.modelId} · ${turn.inputTokens.toLocaleString()} in / ${turn.outputTokens.toLocaleString()} out · ${fmtCost(turn.cost, formatCost)}`)
 		lines.push('')
 
 		const newMsgs = prevCoreTurn === null
@@ -521,6 +523,7 @@ function downloadMd(content: string, filename: string) {
 
 function OverheadInline({ group }: { group: OverheadGroup }) {
 	const [expanded, setExpanded] = useState(false)
+	const { formatCost } = useCurrency()
 	const totalCost = group.turns.reduce((s, t) => s + t.cost, 0)
 
 	return (
@@ -537,7 +540,7 @@ function OverheadInline({ group }: { group: OverheadGroup }) {
 				<span className="opacity-60">
 					{group.turns.length > 1 ? `×${group.turns.length}` : ''}
 				</span>
-				<span className="opacity-60 font-mono">{fmtCost(totalCost)}</span>
+				<span className="opacity-60 font-mono">{formatCost(totalCost)}</span>
 				<span className="ml-auto opacity-40">{expanded ? '▼' : '▶'}</span>
 			</button>
 			{expanded && (
@@ -799,6 +802,7 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 	innerRef: (el: HTMLElement | null) => void
 	historyContexts: Map<string, FileRegion>[]
 }) {
+	const { formatCost } = useCurrency()
 	const { turn, prevCoreTurn, overallIndex, phaseStart } = entry
 	const msgs = turn.messages as MessageBlock[]
 	const prevMsgs = prevCoreTurn ? prevCoreTurn.messages as MessageBlock[] : []
@@ -850,7 +854,7 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 					<span className="font-mono font-semibold text-(--text)">#{overallIndex + 1}</span>
 					<span className="text-(--text-dim)">{turn.modelId}</span>
 					<span className="text-(--text-dim)">{turn.inputTokens.toLocaleString('en-US')} in / {turn.outputTokens.toLocaleString('en-US')} out</span>
-					<span className="text-(--text-dim) font-mono">{fmtCost(turn.cost)}</span>
+					<span className="text-(--text-dim) font-mono">{formatCost(turn.cost)}</span>
 					{compressedMsgs.length > 0 && (
 						<button
 							onClick={() => setShowCompressed(s => !s)}
@@ -888,6 +892,7 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 }
 
 export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTurn?: number }) {
+	const { formatCost } = useCurrency()
 	const turnRefs = useRef<Map<number, HTMLElement>>(new Map())
 
 	const flow = useMemo(() => buildFlow(turns), [turns])
@@ -936,10 +941,10 @@ export function CycleContent({ turns, initialTurn }: { turns: Turn[]; initialTur
 	}, [phaseRuns])
 
 	const handleDownload = useCallback(() => {
-		const md = buildConversationMd(flow, turns)
+		const md = buildConversationMd(flow, turns, formatCost)
 		const id = turns[0]?.iterationId?.slice(-8) ?? 'cycle'
 		downloadMd(md, `conversation-${id}.md`)
-	}, [flow, turns])
+	}, [flow, turns, formatCost])
 
 	return (
 		<>

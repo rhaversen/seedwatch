@@ -321,7 +321,7 @@ export function CycleStats({ turns, onTurnClick }: { turns: Turn[]; onTurnClick?
 					)}
 					<span>{n} calls</span>
 					<span><span className="font-mono text-(--text)">{fmt(totalOut)}</span> out tokens</span>
-					<span><span className="font-mono text-(--text)">${totalCost.toFixed(4)}</span></span>
+					<span><span className="font-mono text-(--text)">{fmtCost(totalCost)}</span></span>
 				</div>
 			</div>
 
