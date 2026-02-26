@@ -290,7 +290,7 @@ function InlineSystemPrompt({ curr, prev, isPhaseStart }: { curr: string; prev: 
 							</div>
 						)}
 					</div>
-					<div className="p-2 max-h-[32rem] overflow-y-auto">
+					<div className="p-2 max-h-128 overflow-y-auto">
 						{mode === 'diff' && changed && display.length > 0 ? (
 							<div className="text-xs font-mono grid grid-cols-2">
 								{display.map((row, i) => {
@@ -329,7 +329,8 @@ function InlineSystemPrompt({ curr, prev, isPhaseStart }: { curr: string; prev: 
 							<textarea
 								readOnly
 								value={curr}
-								className="w-full h-[28rem] text-xs text-(--text-dim) font-mono bg-transparent border-none resize-none outline-none"
+								title="System prompt content"
+								className="w-full h-112 text-xs text-(--text-dim) font-mono bg-transparent border-none resize-none outline-none"
 							/>
 						)}
 					</div>
@@ -378,7 +379,7 @@ function buildFlow(turns: Turn[]): FlowEntry[] {
 	const entries: FlowEntry[] = []
 	let prevCore: Turn | null = null
 	let prevPhase: string | null = null
-	let pendingOverhead: OverheadGroup[] = []
+	const pendingOverhead: OverheadGroup[] = []
 
 	for (let idx = 0; idx < turns.length; idx++) {
 		const turn = turns[idx]
@@ -617,6 +618,7 @@ function ExpandableText({ text, label, previewLen = 400 }: { text: string; label
 					<textarea
 						readOnly
 						value={text}
+						title="Expanded content"
 						className="w-full h-64 text-xs text-(--text-dim) font-mono bg-transparent border border-(--border) rounded resize-y outline-none p-2"
 					/>
 				</>
@@ -696,6 +698,7 @@ function ResponseCompact({ block, contextRegions, historyContexts }: { block: Me
 						<textarea
 							readOnly
 							value={thinkingText}
+							title="Thinking content"
 							className="w-full h-64 text-xs text-purple-300/80 font-mono bg-transparent border-none resize-y outline-none"
 						/>
 					</div>
@@ -805,7 +808,7 @@ function TurnCard({ entry, innerRef, historyContexts }: {
 	const { formatCost } = useCurrency()
 	const { turn, prevCoreTurn, overallIndex, phaseStart } = entry
 	const msgs = turn.messages as MessageBlock[]
-	const prevMsgs = prevCoreTurn ? prevCoreTurn.messages as MessageBlock[] : []
+	const prevMsgs = useMemo(() => prevCoreTurn ? prevCoreTurn.messages as MessageBlock[] : [], [prevCoreTurn])
 	const response = turn.response as MessageBlock[]
 
 	const currSystem = systemToString(turn.system as unknown[])
@@ -1115,7 +1118,7 @@ function Minimap({ phaseRuns, turnRefs, onSegmentClick }: {
 				})}
 				<div
 					ref={markerRef}
-					className="absolute left-0 w-full h-[3px] rounded-full bg-white shadow-[0_0_4px_rgba(255,255,255,0.6)]"
+					className="absolute left-0 w-full h-0.75 rounded-full bg-white shadow-[0_0_4px_rgba(255,255,255,0.6)]"
 					style={{ top: 0 }}
 				/>
 			</div>
